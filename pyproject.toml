@@ -1,20 +1,25 @@
 [project]
 name = "sr2-spectre"
 version = "0.1.0"
-description = "SR2 Spectre — full agent runtime powered by sr2-relay"
+description = "SR2 Spectre — full agent runtime powered by SR2"
 readme = "README.md"
 authors = [{ name = "Diego Camizotti", email = "diego@terminuslabs.co" }]
 requires-python = ">=3.12"
 dependencies = [
-    "httpx>=0.28.1",
     "prompt-toolkit>=3.0.52",
     "pydantic>=2.13.3",
     "pyyaml>=6.0.3",
-    "sr2-relay @ file:///home/shepard/git/sr2-relay",
+    "sr2",
 ]
+
+[tool.uv.sources]
+sr2 = { path = "../sr2", editable = true }
 
 [project.scripts]
 sr2-spectre = "sr2_spectre.cli:main"
+
+[project.entry-points."sr2.tool_providers"]
+spectre_tools = "sr2_spectre.providers:SpectreToolProvider"
 
 [build-system]
 requires = ["uv_build>=0.11.0,<0.12.0"]

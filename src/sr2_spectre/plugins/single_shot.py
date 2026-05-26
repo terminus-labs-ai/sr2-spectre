@@ -33,7 +33,7 @@ class SingleShotPlugin:
             if len(sys.argv) > 1:
                 prompt = " ".join(sys.argv[1:])
             else:
-                print("Enter prompt (Ctrl+D to submit):")
+                print("Enter prompt (Ctrl+D to submit):", file=sys.stderr)
                 prompt = sys.stdin.read().strip()
 
         if not prompt:

@@ -1,0 +1,25 @@
+agent:
+  name: spectre-smoke
+  max_tool_rounds: 10
+
+models:
+  default:
+    model: openai/qwen3.6:27b
+    base_url: http://localhost:11438/v1
+
+pipeline:
+  token_budget: 200000
+  layers:
+    - name: system
+      resolvers:
+        - type: static
+          config:
+            text: "You are a helpful assistant that always starts your replies with 'Aye aye commander'"
+    - name: tools
+      resolvers: []
+      tool_providers:
+        - type: spectre_tools
+    - name: conversation
+      resolvers:
+        - type: session
+        - type: input

@@ -66,17 +66,18 @@ class ToolRegistry:
             fn=tool_instance.__call__ if hasattr(tool_instance, "__call__") else tool_instance,
         )
 
-    def to_definitions(self) -> list[dict[str, Any]]:
-        """Return tool definitions in OpenAI function-calling format."""
+    def to_sr2_definitions(self) -> list["ToolDefinition"]:
+        """Return tool definitions as SR2 ToolDefinition objects.
+
+        This is the canonical domain shape consumed by SpectreToolProvider.
+        """
+        from sr2.models import ToolDefinition
         return [
-            {
-                "type": "function",
-                "function": {
-                    "name": spec.name,
-                    "description": spec.description,
-                    "parameters": spec.input_schema,
-                },
-            }
+            ToolDefinition(
+                name=spec.name,
+                description=spec.description,
+                input_schema=spec.input_schema,
+            )
             for spec in self._tools.values()
         ]
 

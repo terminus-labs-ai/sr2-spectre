@@ -25,20 +25,6 @@ def test_register_and_list() -> None:
     assert "add" in reg.list_names()
 
 
-def test_to_definitions() -> None:
-    reg = ToolRegistry()
-    reg.register(
-        name="search",
-        description="Search the web",
-        input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
-        fn=lambda q: q,
-    )
-    defs = reg.to_definitions()
-    assert len(defs) == 1
-    assert defs[0]["function"]["name"] == "search"
-    assert defs[0]["function"]["description"] == "Search the web"
-
-
 def test_execute_sync_tool() -> None:
     reg = ToolRegistry()
     reg.register(
@@ -73,6 +59,41 @@ async def test_execute_missing_tool() -> None:
         await reg.execute("nonexistent", {})
 
 
-def test_empty_definitions() -> None:
+# ---- to_sr2_definitions ----
+
+def test_to_sr2_definitions_empty() -> None:
+    from sr2.models import ToolDefinition
     reg = ToolRegistry()
-    assert reg.to_definitions() == []
+    result = reg.to_sr2_definitions()
+    assert result == []
+
+
+def test_to_sr2_definitions_single() -> None:
+    from sr2.models import ToolDefinition
+    schema = {"type": "object", "properties": {"query": {"type": "string"}}}
+    reg = ToolRegistry()
+    reg.register(name="search", description="Search the web", input_schema=schema, fn=lambda q: q)
+    result = reg.to_sr2_definitions()
+    assert len(result) == 1
+    assert isinstance(result[0], ToolDefinition)
+    assert result[0].name == "search"
+    assert result[0].description == "Search the web"
+    assert result[0].input_schema == schema
+
+
+def test_to_sr2_definitions_multiple_order() -> None:
+    reg = ToolRegistry()
+    reg.register(name="alpha", description="A", input_schema={}, fn=lambda: None)
+    reg.register(name="beta",  description="B", input_schema={}, fn=lambda: None)
+    result = reg.to_sr2_definitions()
+    assert len(result) == 2
+    assert [d.name for d in result] == ["alpha", "beta"]
+
+
+def test_to_sr2_definitions_schema_is_lossless() -> None:
+    """input_schema dict is passed through unchanged, not re-serialized."""
+    schema = {"type": "object", "properties": {"x": {"type": "integer"}}, "required": ["x"]}
+    reg = ToolRegistry()
+    reg.register(name="t", description="", input_schema=schema, fn=lambda x: x)
+    result = reg.to_sr2_definitions()
+    assert result[0].input_schema == schema

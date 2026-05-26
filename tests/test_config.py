@@ -1,9 +1,12 @@
-"""Tests for config loading."""
+"""Tests for config loading (Step 3: restructured config)."""
+from __future__ import annotations
+
 import pytest
-from pydantic import BaseModel
+from pydantic import ValidationError
 from sr2_spectre.config import (
     AgentConfig,
     HeartbeatConfig,
+    ModelConfig,
     PluginConfig,
     SpectreConfig,
     ToolConfig,
@@ -11,58 +14,116 @@ from sr2_spectre.config import (
 )
 
 
-def test_default_config() -> None:
-    cfg = SpectreConfig(agent=AgentConfig())
-    assert cfg.agent.name == "spectre"
-    assert cfg.agent.model == "default"
-    assert cfg.agent.relay_base_url == "http://localhost:8000"
-    assert cfg.agent.system_prompt == ""
-    assert cfg.agent.tools == []
-    assert cfg.plugins == []
+# ---------------------------------------------------------------------------
+# ModelConfig
+# ---------------------------------------------------------------------------
+
+class TestModelConfig:
+    def test_minimal(self):
+        cfg = ModelConfig(model="openai/gpt-4o")
+        assert cfg.model == "openai/gpt-4o"
+        assert cfg.base_url is None
+
+    def test_with_base_url(self):
+        cfg = ModelConfig(model="openai/qwen3:27b", base_url="http://localhost:11438/v1")
+        assert cfg.base_url == "http://localhost:11438/v1"
 
 
-def test_config_with_values() -> None:
-    cfg = SpectreConfig(
-        agent=AgentConfig(
-            name="edi",
-            model="anthropic/claude-sonnet-4",
-            relay_base_url="http://relay:8000",
-            system_prompt="You are EDI.",
-        )
-    )
-    assert cfg.agent.name == "edi"
-    assert cfg.agent.model == "anthropic/claude-sonnet-4"
+# ---------------------------------------------------------------------------
+# AgentConfig — new shape (no model/base_url/system_prompt)
+# ---------------------------------------------------------------------------
+
+class TestAgentConfig:
+    def test_defaults(self):
+        cfg = AgentConfig()
+        assert cfg.name == "spectre"
+        assert cfg.tools == []
+        assert cfg.max_tool_rounds == 10
+
+    def test_max_tool_rounds_custom(self):
+        cfg = AgentConfig(max_tool_rounds=5)
+        assert cfg.max_tool_rounds == 5
+
+    def test_no_model_field(self):
+        """AgentConfig must NOT have model/base_url/system_prompt."""
+        cfg = AgentConfig()
+        assert not hasattr(cfg, "model"), "model field must be removed from AgentConfig"
+        assert not hasattr(cfg, "base_url"), "base_url must be removed"
+        assert not hasattr(cfg, "system_prompt"), "system_prompt must be removed"
+
+    def test_with_tools(self):
+        cfg = AgentConfig(tools=[
+            ToolConfig(name="search", class_path="sr2_spectre.tools:Search")
+        ])
+        assert len(cfg.tools) == 1
+        assert cfg.tools[0].name == "search"
 
 
-def test_config_with_tools() -> None:
-    cfg = SpectreConfig(
-        agent=AgentConfig(
-            tools=[
-                ToolConfig(
-                    name="search",
-                    class_path="mytools.Search:SearchTool",
-                    config={"engine": "google"},
-                )
+# ---------------------------------------------------------------------------
+# SpectreConfig — new shape with models + pipeline
+# ---------------------------------------------------------------------------
+
+class TestSpectreConfig:
+    def _make_pipeline_dict(self):
+        return {
+            "layers": [
+                {
+                    "name": "system",
+                    "resolvers": [{"type": "static", "config": {"text": "Hello"}}],
+                }
             ]
+        }
+
+    def test_minimal_valid_config(self):
+        cfg = SpectreConfig(
+            agent=AgentConfig(),
+            models={"default": ModelConfig(model="openai/gpt-4o")},
+            pipeline=self._make_pipeline_dict(),
         )
-    )
-    assert len(cfg.agent.tools) == 1
-    assert cfg.agent.tools[0].name == "search"
+        assert cfg.agent.name == "spectre"
+        assert "default" in cfg.models
+        assert len(cfg.pipeline.layers) == 1
 
+    def test_models_required(self):
+        with pytest.raises((ValidationError, TypeError)):
+            SpectreConfig(agent=AgentConfig(), pipeline=self._make_pipeline_dict())
 
-def test_config_with_plugins() -> None:
-    cfg = SpectreConfig(
-        agent=AgentConfig(),
-        plugins=[
-            PluginConfig(
-                name="tui",
-                class_path="sr2_spectre.plugins.tui:TUIPlugin",
+    def test_pipeline_required(self):
+        with pytest.raises((ValidationError, TypeError)):
+            SpectreConfig(
+                agent=AgentConfig(),
+                models={"default": ModelConfig(model="openai/gpt-4o")},
             )
-        ],
-    )
-    assert len(cfg.plugins) == 1
-    assert cfg.plugins[0].name == "tui"
 
+    def test_plugins_default_empty(self):
+        cfg = SpectreConfig(
+            agent=AgentConfig(),
+            models={"default": ModelConfig(model="x")},
+            pipeline=self._make_pipeline_dict(),
+        )
+        assert cfg.plugins == []
+
+    def test_heartbeat_optional(self):
+        cfg = SpectreConfig(
+            agent=AgentConfig(),
+            models={"default": ModelConfig(model="x")},
+            pipeline=self._make_pipeline_dict(),
+        )
+        assert cfg.heartbeat is None
+
+    def test_with_plugins(self):
+        cfg = SpectreConfig(
+            agent=AgentConfig(),
+            models={"default": ModelConfig(model="x")},
+            pipeline=self._make_pipeline_dict(),
+            plugins=[PluginConfig(name="tui", class_path="sr2_spectre.plugins.tui:TUI")],
+        )
+        assert len(cfg.plugins) == 1
+
+
+# ---------------------------------------------------------------------------
+# HeartbeatConfig (unchanged)
+# ---------------------------------------------------------------------------
 
 def test_heartbeat_config_defaults() -> None:
     hb = HeartbeatConfig()
@@ -70,21 +131,63 @@ def test_heartbeat_config_defaults() -> None:
     assert hb.callback is None
 
 
-def test_load_config_file(tmp_path) -> None:
-    config_file = tmp_path / "config.yaml"
-    config_file.write_text(
-        "agent:\n"
-        "  name: test-agent\n"
-        "  model: test-model\n"
-        "  relay_base_url: http://test:9000\n"
-        "  system_prompt: Test prompt\n"
-    )
-    cfg = load_config(str(config_file))
-    assert cfg.agent.name == "test-agent"
-    assert cfg.agent.model == "test-model"
-    assert cfg.agent.relay_base_url == "http://test:9000"
+# ---------------------------------------------------------------------------
+# load_config from YAML — new structure
+# ---------------------------------------------------------------------------
 
+class TestLoadConfig:
+    def test_load_full_config(self, tmp_path):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "agent:\n"
+            "  name: my-agent\n"
+            "  max_tool_rounds: 5\n"
+            "\n"
+            "models:\n"
+            "  default:\n"
+            "    model: openai/qwen3:27b\n"
+            "    base_url: http://localhost:11438/v1\n"
+            "\n"
+            "pipeline:\n"
+            "  token_budget: 100000\n"
+            "  layers:\n"
+            "    - name: system\n"
+            "      resolvers:\n"
+            "        - type: static\n"
+            "          config:\n"
+            "            text: You are a helpful assistant.\n"
+            "    - name: tools\n"
+            "      resolvers: []\n"
+            "      tool_providers:\n"
+            "        - type: spectre_tools\n"
+            "    - name: conversation\n"
+            "      resolvers:\n"
+            "        - type: session\n"
+            "        - type: input\n"
+        )
+        cfg = load_config(str(config_file))
+        assert cfg.agent.name == "my-agent"
+        assert cfg.agent.max_tool_rounds == 5
+        assert cfg.models["default"].model == "openai/qwen3:27b"
+        assert cfg.models["default"].base_url == "http://localhost:11438/v1"
+        assert cfg.pipeline.token_budget == 100000
+        assert len(cfg.pipeline.layers) == 3
 
-def test_load_config_missing_file() -> None:
-    with pytest.raises(FileNotFoundError):
-        load_config("/nonexistent/path/config.yaml")
+    def test_load_missing_file(self):
+        with pytest.raises(FileNotFoundError):
+            load_config("/nonexistent/path/config.yaml")
+
+    def test_load_none_returns_error(self):
+        """load_config(None) must raise — pipeline is now required."""
+        with pytest.raises(Exception):
+            load_config(None)
+
+    def test_smoke_yaml_loads(self):
+        """smoke.yaml (migrated) loads without errors."""
+        import pathlib
+        smoke = pathlib.Path(__file__).parent.parent / "smoke.yaml"
+        if smoke.exists():
+            cfg = load_config(str(smoke))
+            assert cfg.agent is not None
+            assert cfg.models is not None
+            assert cfg.pipeline is not None

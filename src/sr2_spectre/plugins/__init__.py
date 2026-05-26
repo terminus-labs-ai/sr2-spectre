@@ -23,13 +23,13 @@ class Plugin(Protocol):
 
 
 @runtime_checkable
-class InputPlugin(Plugin):
+class InputPlugin(Plugin, Protocol):
     """Plugin that receives user input and routes to agent."""
     async def run(self, agent: "Agent") -> None: ...
 
 
 @runtime_checkable
-class OutputPlugin(Plugin):
+class OutputPlugin(Plugin, Protocol):
     """Plugin that formats and sends agent output."""
     async def handle_output(self, text: str, metadata: dict[str, Any]) -> None: ...
 
