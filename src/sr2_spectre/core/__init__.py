@@ -1,1 +1,1 @@
-"""Spectre core — client, session, and tool loop."""
+"""Spectre core — TurnResult and shared loop types."""
