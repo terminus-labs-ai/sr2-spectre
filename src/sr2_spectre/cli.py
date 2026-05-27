@@ -17,7 +17,7 @@ from typing import Any
 
 os.environ.setdefault("LITELLM_LOG", "ERROR")
 
-from sr2.pipeline.tracing import CollectingTracer, render_trace
+from sr2.pipeline.tracing import CollectingTracer, render_compiled_request, render_trace
 from sr2_spectre.agent import Agent
 from sr2_spectre.config import load_config
 
@@ -146,6 +146,8 @@ async def run_async(argv: list[str] | None = None) -> None:
 
     if tracer is not None:
         print(render_trace(tracer.get_trace()))
+        if tracer.compiled_request is not None:
+            print(render_compiled_request(tracer.compiled_request))
 
     logger.info("SR2 Spectre shutdown")
 
