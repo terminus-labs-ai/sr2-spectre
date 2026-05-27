@@ -1,11 +1,11 @@
-"""Tests for TurnResult (core/loop.py).
+"""Tests for TurnResult (core/__init__.py).
 
-The run_tool_loop() function has been removed — logic now lives in
-Agent.handle_user_message(). This file tests only the TurnResult dataclass,
-which is the public export plugins depend on.
+TurnResult was moved from core/loop.py (now deleted) into core/__init__.py.
+This file tests only the TurnResult dataclass, which is the public export
+plugins depend on.
 """
 
-from sr2_spectre.core.loop import TurnResult
+from sr2_spectre.core import TurnResult
 
 
 def test_turn_result_defaults() -> None:

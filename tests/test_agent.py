@@ -22,7 +22,7 @@ import pytest
 from sr2.models import Message, TextBlock, ToolResultBlock, ToolUseBlock, TokenUsage
 from sr2.protocols.llm import CompletionRequest, CompletionResponse, StreamEvent
 from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core.loop import TurnResult
+from sr2_spectre.core import TurnResult
 
 
 # ---------------------------------------------------------------------------

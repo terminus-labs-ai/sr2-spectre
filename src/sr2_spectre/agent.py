@@ -23,7 +23,7 @@ from sr2.models import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from sr2.orchestrator import SR2
 from sr2.pipeline.token_counting import CharacterTokenCounter
 from sr2_spectre.config import SpectreConfig
-from sr2_spectre.core.loop import TurnResult
+from sr2_spectre.core import TurnResult
 from sr2_spectre.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)

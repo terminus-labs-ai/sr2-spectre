@@ -5,7 +5,7 @@ from io import StringIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sr2_spectre.plugins.single_shot import SingleShotPlugin
-from sr2_spectre.core.loop import TurnResult
+from sr2_spectre.core import TurnResult
 
 
 def _make_agent(response_text: str = "The answer is 4") -> MagicMock:
