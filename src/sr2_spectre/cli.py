@@ -17,6 +17,7 @@ from typing import Any
 
 os.environ.setdefault("LITELLM_LOG", "ERROR")
 
+from sr2.pipeline.tracing import CollectingTracer, render_trace
 from sr2_spectre.agent import Agent
 from sr2_spectre.config import load_config
 
@@ -60,6 +61,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "prompt",
         nargs="*",
         help="Prompt text (for single_shot mode)",
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        default=False,
+        help="Print pipeline firing timeline after reply",
     )
     return parser.parse_args(argv)
 
@@ -113,10 +120,19 @@ async def run_async(argv: list[str] | None = None) -> None:
         config.models.get("default", {}).model if hasattr(config.models.get("default", {}), "model") else "unknown",
     )
 
-    agent = Agent(
-        config=config,
-        session_id=args.session_id,
-    )
+    tracer = CollectingTracer() if args.trace else None
+
+    if tracer is not None:
+        agent = Agent(
+            config=config,
+            session_id=args.session_id,
+            tracer=tracer,
+        )
+    else:
+        agent = Agent(
+            config=config,
+            session_id=args.session_id,
+        )
 
     plugin_kwargs: dict[str, Any] = {}
     if args.plugin == "single_shot" and args.prompt:
@@ -127,6 +143,9 @@ async def run_async(argv: list[str] | None = None) -> None:
     await plugin.start(agent)
     await plugin.run(agent)
     await plugin.stop()
+
+    if tracer is not None:
+        print(render_trace(tracer.get_trace()))
 
     logger.info("SR2 Spectre shutdown")
 

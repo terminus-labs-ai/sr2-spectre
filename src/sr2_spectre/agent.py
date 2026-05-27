@@ -16,7 +16,10 @@ Each round: seed prior history → turn(increment) → reconstruct assistant tur
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from sr2.pipeline.tracing import Tracer
 
 from sr2.integrations.litellm import LiteLLMCallable
 from sr2.models import Message, TextBlock, ToolResultBlock, ToolUseBlock
@@ -45,6 +48,7 @@ class Agent:
         self,
         config: SpectreConfig,
         session_id: str | None = None,
+        tracer: "Tracer | None" = None,
     ) -> None:
         self.config = config
         self.session_id: str = session_id or f"{config.agent.name}-default"
@@ -69,6 +73,7 @@ class Agent:
             token_counter=CharacterTokenCounter(),
             session_id=self.session_id,
             extras={"tool_registry": self.registry},
+            tracer=tracer,
         )
 
     async def handle_user_message(self, text: str) -> TurnResult:
