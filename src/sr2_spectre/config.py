@@ -44,6 +44,16 @@ class ModelConfig(BaseModel):
     base_url: str | None = None
 
 
+class McpServerConfig(BaseModel):
+    """Configuration for a single MCP server connection."""
+    name: str
+    type: str                     # "stdio" or "http"
+    command: list[str] = Field(default_factory=list)
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str = ""
+
+
 class AgentConfig(BaseModel):
     """Agent-level configuration — spectre-owned concerns only.
 
@@ -53,6 +63,7 @@ class AgentConfig(BaseModel):
     name: str = "spectre"
     tools: list[ToolConfig] = Field(default_factory=list)
     max_tool_rounds: int = 10
+    mcp_servers: list[McpServerConfig] = Field(default_factory=list)
 
 
 class SpectreConfig(BaseModel):

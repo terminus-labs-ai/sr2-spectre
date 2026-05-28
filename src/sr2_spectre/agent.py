@@ -34,6 +34,7 @@ from sr2_spectre.events import (
     AgentToolResult,
     AgentToolStart,
 )
+from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
 from sr2_spectre.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,15 @@ class Agent:
         for tool_cfg in config.agent.tools:
             self.registry.register_from_class_path(tool_cfg.class_path, tool_cfg.config)
 
+        # MCP clients — one per mcp_servers entry; connected lazily via initialize()
+        self._mcp_clients: list[MCPClient] = []
+        for mcp_cfg in config.agent.mcp_servers:
+            if mcp_cfg.type == "stdio":
+                client = MCPClient(server_type="stdio", command=mcp_cfg.command, args=mcp_cfg.args, env=mcp_cfg.env)
+            else:
+                client = MCPClient(server_type="http", url=mcp_cfg.url)
+            self._mcp_clients.append(client)
+
         # Build LLM callable — spectre constructs it, then hands it to SR2
         model_cfg = config.models["default"]
         llm_callable = LiteLLMCallable(
@@ -82,6 +92,25 @@ class Agent:
             extras={"tool_registry": self.registry},
             tracer=tracer,
         )
+
+    async def initialize(self) -> None:
+        """Connect all MCP clients and register their tool bridges into the registry.
+
+        Failures for individual servers are caught and logged as warnings so that
+        one bad server does not prevent the agent from starting.
+        """
+        for client in self._mcp_clients:
+            try:
+                bridges = await client.connect()
+                for bridge in bridges:
+                    self.registry.register(
+                        name=bridge.name,
+                        description=bridge.description,
+                        input_schema=bridge.input_schema,
+                        fn=bridge,
+                    )
+            except MCPConnectionError as exc:
+                logger.warning("MCP server failed to connect: %s", exc)
 
     async def stream_message(self, text: str) -> AsyncIterator[AgentEvent]:
         """Stream agent events for a user message.
