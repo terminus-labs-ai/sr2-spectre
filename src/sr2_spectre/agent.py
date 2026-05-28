@@ -16,7 +16,7 @@ Each round: seed prior history → turn(increment) → reconstruct assistant tur
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 if TYPE_CHECKING:
     from sr2.pipeline.tracing import Tracer
@@ -27,6 +27,13 @@ from sr2.orchestrator import SR2
 from sr2.pipeline.token_counting import CharacterTokenCounter
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.core import TurnResult
+from sr2_spectre.events import (
+    AgentDone,
+    AgentEvent,
+    AgentTextDelta,
+    AgentToolResult,
+    AgentToolStart,
+)
 from sr2_spectre.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -76,31 +83,24 @@ class Agent:
             tracer=tracer,
         )
 
-    async def handle_user_message(self, text: str) -> TurnResult:
-        """Process a user message through the SR2-powered tool loop.
+    async def stream_message(self, text: str) -> AsyncIterator[AgentEvent]:
+        """Stream agent events for a user message.
 
-        Protocol (per spec OQ1):
-        - Append user message to authoritative history
-        - Loop up to max_tool_rounds:
-            - seed SR2 with prior history (all but last message)
-            - call sr2.turn(user_input=last_message.content) — stateless compile
-            - reconstruct assistant turn from stream (text + tool_use blocks)
-            - if no tool calls → return
-            - execute each tool, catch errors, append ToolResultBlocks
-            - append result message to history (becomes increment next round)
-        - If max_tool_rounds exceeded → return last text with warning
+        Yields AgentTextDelta, AgentToolStart, AgentToolResult events during
+        processing, and always yields AgentDone as the final event.
+
+        Protocol mirrors handle_user_message() but surfaces events instead of
+        accumulating them.
         """
         self.history.append(Message(role="user", content=[TextBlock(text=text)]))
 
         max_rounds = self.config.agent.max_tool_rounds
         total_tool_calls = 0
-        last_text = ""
 
         for _round in range(max_rounds):
             prior = self.history[:-1]
             increment = self.history[-1].content
 
-            # Seed SR2 with correct prior — overwrites its lossy accumulation
             self.sr2.seed_session(prior)
 
             text_acc: list[str] = []
@@ -109,6 +109,7 @@ class Agent:
             async for ev in self.sr2.turn(user_input=increment):
                 if ev.type == "text" and ev.text:
                     text_acc.append(ev.text)
+                    yield AgentTextDelta(text=ev.text)
                 elif ev.type == "tool_use":
                     tool_uses.append(
                         ToolUseBlock(
@@ -117,7 +118,6 @@ class Agent:
                             input=ev.tool_input,
                         )
                     )
-                # "end" and "usage" events: fall through, generator terminates
 
             last_text = "".join(text_acc)
             assistant_content = (
@@ -126,50 +126,59 @@ class Agent:
             self.history.append(Message(role="assistant", content=assistant_content))
 
             if not tool_uses:
-                # No tool calls — final response
                 logger.debug(
                     "Turn complete after %d round(s), %d tool calls",
                     _round + 1,
                     total_tool_calls,
                 )
-                return TurnResult(
-                    text=last_text,
-                    tool_calls_executed=total_tool_calls,
-                )
+                yield AgentDone(tool_calls_executed=total_tool_calls)
+                return
 
-            # Execute tools — FR13: errors caught and fed back, not raised
+            # Execute tools — errors caught and surfaced as AgentToolResult(is_error=True)
             result_blocks: list[ToolResultBlock] = []
             for tu in tool_uses:
                 total_tool_calls += 1
+                yield AgentToolStart(tool_id=tu.id, name=tu.name, input=tu.input)
                 try:
                     out = await self.registry.execute(tu.name, tu.input)
-                    result_blocks.append(
-                        ToolResultBlock(tool_use_id=tu.id, content=str(out))
-                    )
+                    result_content = str(out)
+                    is_error = False
                 except Exception as exc:
                     logger.warning("Tool %r failed: %s", tu.name, exc)
-                    result_blocks.append(
-                        ToolResultBlock(
-                            tool_use_id=tu.id,
-                            content=f"ERROR: {exc}",
-                        )
-                    )
+                    result_content = f"ERROR: {exc}"
+                    is_error = True
+                yield AgentToolResult(
+                    tool_id=tu.id,
+                    name=tu.name,
+                    content=result_content,
+                    is_error=is_error,
+                )
+                result_blocks.append(
+                    ToolResultBlock(tool_use_id=tu.id, content=result_content)
+                )
 
-            # Tool results become the next increment
             self.history.append(Message(role="user", content=result_blocks))
 
-        # FR14: exceeded max_tool_rounds — return last text with surfaced warning
-        warning = (
-            f"\n\n[Warning: tool loop exceeded max_tool_rounds={max_rounds}. "
-            "Stopping to prevent infinite execution.]"
-        )
+        # max_tool_rounds exhausted without a clean no-tool-call round
         logger.warning(
             "max_tool_rounds=%d exceeded for session %s", max_rounds, self.session_id
         )
-        return TurnResult(
-            text=last_text + warning,
-            tool_calls_executed=total_tool_calls,
-        )
+        yield AgentDone(tool_calls_executed=total_tool_calls)
+
+    async def handle_user_message(self, text: str) -> TurnResult:
+        """Process a user message through the SR2-powered tool loop.
+
+        Re-implemented on top of stream_message() — collects all events and
+        returns a TurnResult.
+        """
+        text_parts: list[str] = []
+        total = 0
+        async for ev in self.stream_message(text):
+            if isinstance(ev, AgentTextDelta):
+                text_parts.append(ev.text)
+            elif isinstance(ev, AgentDone):
+                total = ev.tool_calls_executed
+        return TurnResult(text="".join(text_parts), tool_calls_executed=total)
 
     def register_tool(
         self,
