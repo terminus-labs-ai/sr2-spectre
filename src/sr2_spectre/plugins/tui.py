@@ -4,10 +4,25 @@ Usage: sr2-spectre --plugin tui
 """
 from __future__ import annotations
 
+import json
+import sys
 from typing import TYPE_CHECKING
+
+from prompt_toolkit import PromptSession
+
+from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
 
 if TYPE_CHECKING:
     from sr2_spectre.agent import Agent
+
+_HELP = """\
+Commands:
+  /quit   — exit the TUI
+  /exit   — exit the TUI
+  /reset  — start a new session
+  /help   — show this help
+  /tools  — list available tools
+"""
 
 
 class TUIPlugin:
@@ -15,33 +30,76 @@ class TUIPlugin:
 
     def __init__(self) -> None:
         self._running = False
+        self._session: PromptSession | None = None
 
     async def start(self, agent: "Agent") -> None:
         """Initialize TUI."""
         self._running = True
-        print(f"Spectre TUI — session {agent.session_id}")
-        print("Type a message (or 'quit' to exit):")
+        self._session = PromptSession()
 
     async def stop(self) -> None:
-        """Cleanup."""
+        """Signal the run loop to exit."""
         self._running = False
 
     async def run(self, agent: "Agent") -> None:
         """Interactive loop."""
-        from prompt_toolkit import prompt
+        self._running = True
+        session = PromptSession()
 
         while self._running:
+            # --- prompt ---
             try:
-                user_input = prompt("> ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print("\nExiting.")
+                user_input = await session.prompt_async("> ")
+            except KeyboardInterrupt:
+                print("\nInterrupted.")
+                break
+            except EOFError:
+                print("\nEOF.")
                 break
 
-            if not user_input:
+            # --- empty / whitespace ---
+            if not user_input or not user_input.strip():
                 continue
-            if user_input.lower() in ("quit", "exit", "q"):
+
+            # --- slash commands ---
+            stripped = user_input.strip()
+            if stripped in ("/quit", "/exit"):
                 print("Goodbye.")
                 break
 
-            result = await agent.handle_user_message(user_input)
-            print(f"\n{result.text}\n")
+            if stripped == "/reset":
+                agent.new_session()
+                print("Session reset.")
+                continue
+
+            if stripped == "/help":
+                print(_HELP)
+                continue
+
+            if stripped == "/tools":
+                print(str(agent.registry.list_names()))
+                continue
+
+            # --- stream message ---
+            try:
+                async for ev in agent.stream_message(stripped):
+                    if isinstance(ev, AgentTextDelta):
+                        sys.stdout.write(ev.text)
+                        sys.stdout.flush()
+                    elif isinstance(ev, AgentToolStart):
+                        args_json = json.dumps(ev.input)
+                        if len(args_json) > 60:
+                            args_preview = args_json[:60] + "..."
+                        else:
+                            args_preview = args_json
+                        print(f"\n⚙ {ev.name}({args_preview})...")
+                    elif isinstance(ev, AgentToolResult):
+                        if ev.is_error:
+                            print(f"✗ {ev.name} failed")
+                        else:
+                            print(f"✓ {ev.name} done")
+                    elif isinstance(ev, AgentDone):
+                        print("\n\n", end="")
+            except KeyboardInterrupt:
+                print("\n[Interrupted]")
+                continue
