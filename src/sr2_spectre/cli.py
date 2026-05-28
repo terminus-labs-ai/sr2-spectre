@@ -138,6 +138,8 @@ async def run_async(argv: list[str] | None = None) -> None:
     if args.plugin == "single_shot" and args.prompt:
         plugin_kwargs["prompt"] = " ".join(args.prompt)
 
+    await agent.initialize()
+
     plugin = _load_plugin(args.plugin, **plugin_kwargs)
 
     await plugin.start(agent)
