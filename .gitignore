@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local config and session files
+*.local.yaml
+smoke.yaml
+handoff.md
+.env

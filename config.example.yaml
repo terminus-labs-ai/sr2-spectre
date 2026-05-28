@@ -1,0 +1,64 @@
+# SR2 Spectre — example configuration
+#
+# Copy this file, fill in your values, and pass it to sr2-spectre:
+#   sr2-spectre my-config.yaml --plugin tui
+
+# Agent-level settings
+agent:
+  name: my-agent
+  max_tool_rounds: 10   # max LLM → tool → LLM cycles per turn
+
+  # Built-in tools to register. Each tool is a Python class loaded by class_path.
+  # Remove tools you don't want, or add custom ones.
+  tools:
+    - name: terminal
+      class_path: sr2_spectre.tools.builtins.terminal.TerminalTool
+      config:
+        timeout: 30           # seconds before command is killed
+
+    - name: file_read
+      class_path: sr2_spectre.tools.builtins.file_read.FileReadTool
+      config:
+        max_bytes: 1000000    # refuse files larger than this
+
+    - name: file_write
+      class_path: sr2_spectre.tools.builtins.file_write.FileWriteTool
+
+    # Uncomment to enable web search via a SearXNG instance
+    # - name: web_search
+    #   class_path: sr2_spectre.tools.builtins.web_search.WebSearchTool
+    #   config:
+    #     base_url: http://localhost:8080   # your SearXNG URL
+    #     max_results: 5
+
+# LLM endpoints. "default" is required. Additional named endpoints are optional.
+models:
+  default:
+    model: openai/YOUR_MODEL_NAME   # e.g. openai/gpt-4o, anthropic/claude-opus-4-7
+    base_url: http://localhost:11434/v1  # omit for hosted APIs (OpenAI, Anthropic)
+
+# SR2 pipeline — context compilation, token budgets, layers
+pipeline:
+  token_budget: 200000
+
+  layers:
+    # System prompt layer
+    - name: system
+      resolvers:
+        - type: static
+          config:
+            text: |
+              You are a helpful AI assistant with access to tools.
+              Use them when they would help answer the user's question.
+
+    # Tool definitions layer — injects available tools into context
+    - name: tools
+      resolvers: []
+      tool_providers:
+        - type: spectre_tools
+
+    # Conversation history layer
+    - name: conversation
+      resolvers:
+        - type: session   # prior turns from this session
+        - type: input     # current user message

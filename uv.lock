@@ -1474,6 +1474,7 @@ name = "sr2-spectre"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "prompt-toolkit" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -1489,6 +1490,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "pydantic", specifier = ">=2.13.3" },
     { name = "pyyaml", specifier = ">=6.0.3" },
