@@ -3,6 +3,7 @@
 Usage:
     sr2-spectre config.yaml --plugin single_shot "What is the weather?"
     sr2-spectre config.yaml --plugin tui
+    sr2-spectre config show [--no-provenance] [--sr2-home PATH]
 """
 from __future__ import annotations
 
@@ -24,6 +25,68 @@ from sr2_spectre.config import load_config
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LOG_FILE = Path.home() / ".sr2-spectre" / "spectre.log"
+
+
+def _parse_config_show_args(argv: list[str]) -> argparse.Namespace:
+    """Parse arguments for 'spectre config show' subcommand."""
+    parser = argparse.ArgumentParser(
+        prog="sr2-spectre config show",
+        description="Show the resolved configuration with provenance annotations.",
+        add_help=True,
+    )
+    parser.add_argument(
+        "--no-provenance",
+        action="store_true",
+        default=False,
+        help="Output plain YAML without source annotations",
+    )
+    parser.add_argument(
+        "--include-content",
+        action="store_true",
+        default=False,
+        help="Include raw file content in the output (reserved)",
+    )
+    parser.add_argument(
+        "--sr2-home",
+        type=str,
+        default=None,
+        help="Override SR2_HOME directory",
+    )
+    return parser.parse_args(argv)
+
+
+def _run_config_show(argv: list[str]) -> int:
+    """Execute the 'config show' dry-run command. Returns exit code (0 or 1)."""
+    from sr2_spectre.config import (
+        format_dry_run,
+        load_config_with_provenance,
+        validate_config,
+    )
+
+    args = _parse_config_show_args(argv)
+
+    env = dict(os.environ)
+    if args.sr2_home:
+        env["SR2_HOME"] = args.sr2_home
+
+    try:
+        config, provenance = load_config_with_provenance(cwd=Path.cwd(), env=env)
+    except Exception as exc:
+        print(f"# Error loading config: {exc}", file=sys.stdout)
+        return 1
+
+    errors = validate_config(config)
+
+    output = format_dry_run(
+        config=config,
+        provenance=provenance,
+        errors=errors,
+        include_content=args.include_content,
+        show_provenance=not args.no_provenance,
+    )
+    print(output, end="")
+
+    return 1 if errors else 0
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -154,8 +217,16 @@ async def run_async(argv: list[str] | None = None) -> None:
     logger.info("SR2 Spectre shutdown")
 
 
-def main() -> None:
-    asyncio.run(run_async())
+def main(argv: list[str] | None = None) -> None:
+    """Entry point. Dispatches 'config show' before agent startup."""
+    args = argv if argv is not None else sys.argv[1:]
+
+    # Dispatch 'config show' subcommand before agent startup
+    if len(args) >= 2 and args[0] == "config" and args[1] == "show":
+        exit_code = _run_config_show(args[2:])
+        sys.exit(exit_code)
+
+    asyncio.run(run_async(argv))
 
 
 if __name__ == "__main__":

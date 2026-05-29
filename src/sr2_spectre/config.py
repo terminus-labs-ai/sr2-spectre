@@ -11,6 +11,7 @@ SpectreConfig is a superset of SR2's PipelineConfig:
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,22 @@ from sr2.config.models import PipelineConfig
 
 from sr2_spectre.config_merge import merge_configs
 from sr2_spectre.path_resolution import resolve_path
+
+
+@dataclass
+class ProvenanceValue:
+    """Tracks the winning source for a config value.
+
+    Attributes:
+        value: The actual config value (any type).
+        source: Human-readable description of the file/tier that contributed
+                this value. Examples:
+                  "~/.sr2/config.yaml (global)"
+                  "/project/.spectre.yaml (project)"
+                  "/project/agents/base.yaml (extends)"
+    """
+    value: Any
+    source: str
 
 
 class ToolConfig(BaseModel):
@@ -85,6 +102,14 @@ class SpectreConfig(BaseModel):
 
 class CircularExtendsError(Exception):
     """Raised when a circular 'extends:' chain is detected in config files."""
+
+
+class StartupConfigError(Exception):
+    """Raised when config validation fails at startup."""
+
+    def __init__(self, errors: list[str]) -> None:
+        self.errors = errors
+        super().__init__("\n".join(errors))
 
 
 def resolve_extends(
@@ -224,6 +249,370 @@ def load_merged_config(
         result = merge_configs(result, raw)
 
     return result
+
+
+def _tier_label(path: Path, sr2_home: Path, cwd: Path) -> str:
+    """Return a human-readable tier label for a config file path."""
+    try:
+        path = path.resolve()
+        sr2_home = sr2_home.resolve()
+        cwd = cwd.resolve()
+    except Exception:
+        pass
+
+    # Check if it's under sr2_home
+    try:
+        path.relative_to(sr2_home)
+        name = path.name
+        if name == "config.yaml":
+            return f"{path} (global)"
+        return f"{path} (global-spectre)"
+    except ValueError:
+        pass
+
+    # Check if it's under cwd
+    try:
+        path.relative_to(cwd)
+        return f"{path} (project)"
+    except ValueError:
+        pass
+
+    return f"{path} (extends)"
+
+
+def _build_provenance(
+    config: dict,
+    source: str,
+) -> dict:
+    """Build a provenance map for a config dict with all top-level keys from source."""
+    return {
+        key: ProvenanceValue(value=val, source=source)
+        for key, val in config.items()
+    }
+
+
+def _merge_provenance(
+    parent_provenance: dict,
+    child_provenance: dict,
+    child_config: dict,
+    parent_config: dict,
+) -> dict:
+    """Merge two provenance maps: child wins for keys it provides.
+
+    For keys only in parent, keep parent provenance.
+    For keys in child, use child provenance (child wins).
+    """
+    result = dict(parent_provenance)
+    for key in child_config:
+        if key in child_provenance:
+            result[key] = child_provenance[key]
+        else:
+            # Key came from child but wasn't explicitly tracked — use child source
+            # This shouldn't normally happen but handle it gracefully
+            if child_provenance:
+                first_source = next(iter(child_provenance.values())).source
+            else:
+                first_source = "unknown"
+            result[key] = ProvenanceValue(value=child_config[key], source=first_source)
+    return result
+
+
+def _resolve_extends_with_provenance(
+    config: dict,
+    declaring_file: Path,
+    declaring_source: str,
+    env: dict[str, str] | None = None,
+    _chain: list[Path] | None = None,
+) -> tuple[dict, dict]:
+    """Resolve extends: key recursively, tracking provenance.
+
+    Returns:
+        (resolved_config, provenance_map) where provenance_map has the same
+        top-level keys as resolved_config, with ProvenanceValue leaves.
+    """
+    from sr2_spectre.path_resolution import ConfigPathError  # avoid circular
+    if _chain is None:
+        _chain = []
+
+    declaring_file = declaring_file.resolve()
+
+    if declaring_file in _chain:
+        chain_str = " -> ".join(str(p) for p in _chain) + f" -> {declaring_file}"
+        raise CircularExtendsError(
+            f"Circular 'extends:' detected: {chain_str}"
+        )
+
+    current_chain = _chain + [declaring_file]
+
+    extends_raw = config.get("extends")
+    if extends_raw is None:
+        # No extends: provenance is declaring_file for all keys
+        child_without_extends = {k: v for k, v in config.items() if k != "extends"}
+        provenance = _build_provenance(child_without_extends, declaring_source)
+        return child_without_extends, provenance
+
+    # Resolve the extends path
+    parent_path = resolve_path(str(extends_raw), declaring_file, env)
+
+    if not parent_path.exists():
+        raise FileNotFoundError(
+            f"Extended config file not found: {parent_path} "
+            f"(referenced from {declaring_file})"
+        )
+
+    # Load the parent file
+    parent_raw = yaml.safe_load(parent_path.read_text())
+    if parent_raw is None:
+        parent_raw = {}
+
+    parent_source = f"{parent_path} (extends)"
+
+    # Recursively resolve the parent's own extends chain
+    parent_resolved, parent_provenance = _resolve_extends_with_provenance(
+        parent_raw,
+        declaring_file=parent_path,
+        declaring_source=parent_source,
+        env=env,
+        _chain=current_chain,
+    )
+
+    # Strip 'extends' from the declaring config
+    child_without_extends = {k: v for k, v in config.items() if k != "extends"}
+    child_provenance = _build_provenance(child_without_extends, declaring_source)
+
+    # Merge: parent is base, child on top
+    merged = merge_configs(parent_resolved, child_without_extends)
+
+    # Merge provenance: child keys take child provenance, parent-only keys keep parent provenance
+    merged_provenance = _merge_provenance(
+        parent_provenance=parent_provenance,
+        child_provenance=child_provenance,
+        child_config=child_without_extends,
+        parent_config=parent_resolved,
+    )
+
+    return merged, merged_provenance
+
+
+def load_config_with_provenance(
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[dict, dict]:
+    """Load config tracking the winning source for each top-level key.
+
+    Returns:
+        (merged_config, provenance_map)
+        provenance_map has the same top-level key structure as merged_config,
+        with values as ProvenanceValue(value, source) objects.
+
+    Args:
+        cwd: Working directory for tier 3 lookup. Defaults to Path.cwd().
+        env: Environment variables dict. Defaults to os.environ.
+    """
+    if cwd is None:
+        cwd = Path.cwd()
+    if env is None:
+        env = dict(os.environ)
+
+    sr2_home = resolve_sr2_home(env)
+
+    tier_paths = [
+        sr2_home / "config.yaml",
+        sr2_home / "spectre.yaml",
+        cwd / ".spectre.yaml",
+    ]
+
+    result: dict = {}
+    result_provenance: dict = {}
+
+    for path in tier_paths:
+        if not path.exists():
+            continue
+        raw = yaml.safe_load(path.read_text())
+        if raw is None:
+            raw = {}
+
+        source = _tier_label(path, sr2_home, cwd)
+        tier_config, tier_provenance = _resolve_extends_with_provenance(
+            raw,
+            declaring_file=path,
+            declaring_source=source,
+            env=env,
+        )
+
+        # Merge config
+        result = merge_configs(result, tier_config)
+
+        # Merge provenance: current tier wins for keys it provides
+        result_provenance = _merge_provenance(
+            parent_provenance=result_provenance,
+            child_provenance=tier_provenance,
+            child_config=tier_config,
+            parent_config=result,
+        )
+
+    return result, result_provenance
+
+
+def format_dry_run(
+    config: dict,
+    provenance: dict,
+    errors: list[str],
+    include_content: bool = False,
+    show_provenance: bool = True,
+) -> str:
+    """Format the dry-run report as a string.
+
+    Outputs:
+    - Merged YAML with inline provenance comments (if show_provenance=True)
+    - Validation errors section
+    - Exit-code hint (0 = clean, 1 = errors)
+
+    Args:
+        config: The merged config dict.
+        provenance: The provenance map from load_config_with_provenance.
+        errors: List of validation error strings from validate_config.
+        include_content: If True, include raw file content (reserved, not used).
+        show_provenance: If True, annotate each top-level key with its source.
+
+    Returns:
+        Formatted report string.
+    """
+    lines: list[str] = []
+
+    if config:
+        if show_provenance:
+            # Output each top-level key as YAML with a provenance comment
+            for key, value in config.items():
+                key_yaml = yaml.dump({key: value}, default_flow_style=False).rstrip()
+                pv = provenance.get(key)
+                if pv is not None:
+                    # Add comment to first line
+                    first_line, *rest_lines = key_yaml.split("\n")
+                    annotated = f"{first_line}  # ← {pv.source}"
+                    if rest_lines:
+                        key_yaml = "\n".join([annotated] + rest_lines)
+                    else:
+                        key_yaml = annotated
+                lines.append(key_yaml)
+        else:
+            # Plain YAML — no annotations
+            lines.append(yaml.dump(config, default_flow_style=False).rstrip())
+    else:
+        lines.append("{}")
+
+    if errors:
+        lines.append("")
+        lines.append("errors:")
+        for err in errors:
+            lines.append(f"  - {err}")
+
+    exit_code = 1 if errors else 0
+    lines.append("")
+    lines.append(f"# exit code: {exit_code}")
+
+    return "\n".join(lines) + "\n"
+
+
+def validate_config(config: dict) -> list[str]:
+    """Return a list of validation error strings. Empty = valid.
+
+    Rules:
+    - If agent key present and has 'name': must be a non-empty string.
+    - If models key present: must be a dict; each entry must have a non-empty 'model' field.
+    - If pipeline key present and has 'layers': each layer must have a non-empty 'name';
+      each resolver/transformer within a layer must be a dict.
+    """
+    errors: list[str] = []
+
+    # --- agent ---
+    agent = config.get("agent")
+    if isinstance(agent, dict) and "name" in agent:
+        name = agent["name"]
+        if not isinstance(name, str) or not name:
+            errors.append("agent.name must be a non-empty string")
+
+    # --- models ---
+    models = config.get("models")
+    if models is not None:
+        if not isinstance(models, dict):
+            errors.append("models must be a dict mapping names to model configs")
+        else:
+            for entry_name, entry in models.items():
+                if not isinstance(entry, dict):
+                    errors.append(
+                        f"models.{entry_name} must be a dict"
+                    )
+                    continue
+                model_field = entry.get("model")
+                if model_field is None:
+                    errors.append(
+                        f"models.{entry_name} is missing required 'model' field"
+                    )
+                elif not isinstance(model_field, str) or not model_field:
+                    errors.append(
+                        f"models.{entry_name}.model must be a non-empty string"
+                    )
+
+    # --- pipeline ---
+    pipeline = config.get("pipeline")
+    if isinstance(pipeline, dict) and "layers" in pipeline:
+        layers = pipeline["layers"]
+        if isinstance(layers, list):
+            for i, layer in enumerate(layers):
+                if not isinstance(layer, dict):
+                    errors.append(f"pipeline.layers[{i}] must be a dict")
+                    continue
+                layer_name = layer.get("name")
+                if layer_name is None:
+                    errors.append(
+                        f"pipeline.layers[{i}] is missing required 'name' field"
+                    )
+                elif not isinstance(layer_name, str) or not layer_name:
+                    errors.append(
+                        f"pipeline.layers[{i}].name must be a non-empty string"
+                    )
+                for section in ("resolvers", "transformers"):
+                    items = layer.get(section)
+                    if items is None:
+                        continue
+                    if isinstance(items, list):
+                        for j, item in enumerate(items):
+                            if not isinstance(item, dict):
+                                errors.append(
+                                    f"pipeline.layers[{i}].{section}[{j}] must be a dict"
+                                )
+
+    return errors
+
+
+def load_and_validate(
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> dict:
+    """Load, merge, extend, and validate config. Raises StartupConfigError on any error.
+
+    Calls load_merged_config first. Structural errors (CircularExtendsError,
+    ConfigPathError) propagate directly — they abort immediately. Validation errors
+    from validate_config are aggregated and raised together as StartupConfigError.
+
+    Args:
+        cwd: Working directory for tier 3 lookup. Defaults to Path.cwd().
+        env: Environment variables dict. Defaults to os.environ.
+
+    Returns:
+        The validated merged config dict.
+
+    Raises:
+        CircularExtendsError: If a circular extends chain is detected.
+        ConfigPathError: If an unresolved ${VAR} is found in a path.
+        StartupConfigError: If validate_config returns any errors.
+    """
+    merged = load_merged_config(cwd=cwd, env=env)
+    errors = validate_config(merged)
+    if errors:
+        raise StartupConfigError(errors)
+    return merged
 
 
 def load_config(path: str | Path) -> SpectreConfig:
