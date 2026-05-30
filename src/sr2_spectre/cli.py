@@ -20,7 +20,8 @@ os.environ.setdefault("LITELLM_LOG", "ERROR")
 
 from sr2.pipeline.tracing import CollectingTracer, render_compiled_request, render_trace
 from sr2_spectre.agent import Agent
-from sr2_spectre.config import load_config
+from sr2_spectre.config import SpectreConfig
+from sr2_spectre.config import load_resolved_config as _resolve_merged_config
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,12 @@ def _parse_config_show_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="Override SR2_HOME directory",
     )
+    parser.add_argument(
+        "config_file",
+        nargs="?",
+        default=None,
+        help="Optional positional config file (merged at tier 4, highest priority)",
+    )
     return parser.parse_args(argv)
 
 
@@ -60,6 +67,7 @@ def _run_config_show(argv: list[str]) -> int:
     from sr2_spectre.config import (
         format_dry_run,
         load_config_with_provenance,
+        load_resolved_config_with_provenance,
         validate_config,
     )
 
@@ -70,7 +78,12 @@ def _run_config_show(argv: list[str]) -> int:
         env["SR2_HOME"] = args.sr2_home
 
     try:
-        config, provenance = load_config_with_provenance(cwd=Path.cwd(), env=env)
+        if args.config_file:
+            config, provenance = load_resolved_config_with_provenance(
+                args.config_file, cwd=Path.cwd(), env=env
+            )
+        else:
+            config, provenance = load_config_with_provenance(cwd=Path.cwd(), env=env)
     except Exception as exc:
         print(f"# Error loading config: {exc}", file=sys.stdout)
         return 1
@@ -170,13 +183,32 @@ def _configure_logging(level: str, log_file: str) -> None:
     logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
+def load_resolved_config(
+    positional_path: str | Path,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> SpectreConfig:
+    """Resolve the unified 4-tier config and build a SpectreConfig.
+
+    Thin typed wrapper over ``config.load_resolved_config`` (which owns the
+    merge logic and is exercised by the resolution test suite): merges
+    $SR2_HOME/config.yaml, $SR2_HOME/spectre.yaml, <cwd>/.spectre.yaml, then
+    the extends-resolved positional file (tier 4, highest priority), and
+    validates the result into a SpectreConfig.
+    """
+    merged = _resolve_merged_config(positional_path, cwd=cwd, env=env)
+    return SpectreConfig(**merged)
+
+
 async def run_async(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     _configure_logging(args.log_level, args.log_file)
 
     logger.info("SR2 Spectre starting")
 
-    config = load_config(args.config)
+    config = load_resolved_config(
+        args.config, cwd=Path.cwd(), env=dict(os.environ)
+    )
     logger.info(
         "Agent: %s | model: %s",
         config.agent.name,

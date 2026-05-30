@@ -330,7 +330,6 @@ def _resolve_extends_with_provenance(
         (resolved_config, provenance_map) where provenance_map has the same
         top-level keys as resolved_config, with ProvenanceValue leaves.
     """
-    from sr2_spectre.path_resolution import ConfigPathError  # avoid circular
     if _chain is None:
         _chain = []
 
@@ -452,6 +451,181 @@ def load_config_with_provenance(
         )
 
     return result, result_provenance
+
+
+def _resolve_tiers_with_provenance(
+    paths: list[Path],
+    sr2_home: Path,
+    cwd: Path,
+    env: dict[str, str] | None,
+    require_last: bool = False,
+) -> tuple[dict, dict]:
+    """Resolve and merge an ordered list of tier paths, tracking provenance.
+
+    Shared resolution core for both the tier-only and positional-file-aware
+    loaders. Each path is yaml-loaded, extends-resolved (with provenance), then
+    merged in order (later paths win). Missing files are silently skipped,
+    EXCEPT the final path when ``require_last`` is True (the positional file
+    must exist).
+
+    De-dup: a path whose resolved absolute location was already processed is
+    skipped, so passing a tier file as the positional file does not merge it
+    twice.
+
+    Args:
+        paths: Ordered tier paths, lowest to highest priority.
+        sr2_home: Resolved SR2_HOME (for tier labelling).
+        cwd: Resolved working directory (for tier labelling).
+        env: Environment for ${VAR} interpolation in extends paths.
+        require_last: If True, the last path must exist (else FileNotFoundError).
+
+    Returns:
+        (merged_config, provenance_map)
+    """
+    result: dict = {}
+    result_provenance: dict = {}
+    seen: set[Path] = set()
+
+    for index, path in enumerate(paths):
+        is_last = index == len(paths) - 1
+        if not path.exists():
+            if is_last and require_last:
+                raise FileNotFoundError(f"Config not found: {path}")
+            continue
+
+        resolved = path.resolve()
+        if resolved in seen:
+            # De-dup: already merged this file at a lower tier.
+            continue
+        seen.add(resolved)
+
+        raw = yaml.safe_load(path.read_text())
+        if raw is None:
+            raw = {}
+
+        source = _tier_label(path, sr2_home, cwd)
+        tier_config, tier_provenance = _resolve_extends_with_provenance(
+            raw,
+            declaring_file=path,
+            declaring_source=source,
+            env=env,
+        )
+
+        result = merge_configs(result, tier_config)
+        result_provenance = _merge_provenance(
+            parent_provenance=result_provenance,
+            child_provenance=tier_provenance,
+            child_config=tier_config,
+            parent_config=result,
+        )
+
+    return result, result_provenance
+
+
+def load_lower_tiers(
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> dict:
+    """Resolve and merge tiers 1-3 only (no positional file).
+
+    Tier order (lowest to highest):
+    1. $SR2_HOME/config.yaml
+    2. $SR2_HOME/spectre.yaml
+    3. <cwd>/.spectre.yaml
+
+    Missing files are silently skipped. Returns the merged dict (may be empty).
+    Used by the CLI to overlay the positional file (tier 4) on top while keeping
+    the positional file's own load behind the patchable load_config seam.
+    """
+    if cwd is None:
+        cwd = Path.cwd()
+    if env is None:
+        env = dict(os.environ)
+
+    sr2_home = resolve_sr2_home(env)
+    paths = [
+        sr2_home / "config.yaml",
+        sr2_home / "spectre.yaml",
+        cwd / ".spectre.yaml",
+    ]
+    config, _ = _resolve_tiers_with_provenance(
+        paths, sr2_home=sr2_home, cwd=cwd, env=env, require_last=False
+    )
+    return config
+
+
+def load_resolved_config_with_provenance(
+    positional_path: str | Path,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[dict, dict]:
+    """Resolve the unified 4-tier config with the positional file at tier 4.
+
+    Tier order (lowest to highest priority):
+    1. $SR2_HOME/config.yaml
+    2. $SR2_HOME/spectre.yaml
+    3. <cwd>/.spectre.yaml
+    4. extends-resolved(<positional_path>)  — wins over all
+
+    Missing tier files (1-3) are silently skipped; the positional file must
+    exist (FileNotFoundError otherwise). If the positional path resolves to the
+    same file as a lower tier, it is not merged twice. Circular extends in any
+    file raises CircularExtendsError.
+
+    Args:
+        positional_path: Path to the tier-4 config file (required).
+        cwd: Working directory for tier 3 lookup. Defaults to Path.cwd().
+        env: Environment variables dict. Defaults to os.environ.
+
+    Returns:
+        (merged_config, provenance_map) — provenance keys contributed by the
+        positional file carry that file's source label.
+    """
+    if cwd is None:
+        cwd = Path.cwd()
+    if env is None:
+        env = dict(os.environ)
+
+    sr2_home = resolve_sr2_home(env)
+
+    paths = [
+        sr2_home / "config.yaml",
+        sr2_home / "spectre.yaml",
+        cwd / ".spectre.yaml",
+        Path(positional_path),
+    ]
+
+    return _resolve_tiers_with_provenance(
+        paths,
+        sr2_home=sr2_home,
+        cwd=cwd,
+        env=env,
+        require_last=True,
+    )
+
+
+def load_resolved_config(
+    positional_path: str | Path,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> dict:
+    """Resolve the unified 4-tier config with the positional file at tier 4.
+
+    Same resolution as load_resolved_config_with_provenance but returns only
+    the merged config dict. See that function for tier order and semantics.
+
+    Args:
+        positional_path: Path to the tier-4 config file (required).
+        cwd: Working directory for tier 3 lookup. Defaults to Path.cwd().
+        env: Environment variables dict. Defaults to os.environ.
+
+    Returns:
+        The merged config dict.
+    """
+    config, _ = load_resolved_config_with_provenance(
+        positional_path, cwd=cwd, env=env
+    )
+    return config
 
 
 def format_dry_run(
@@ -615,15 +789,21 @@ def load_and_validate(
     return merged
 
 
-def load_config(path: str | Path) -> SpectreConfig:
-    """Load config from a YAML file.
+def load_config(source: str | Path | dict) -> SpectreConfig:
+    """Build a SpectreConfig from a YAML file path or a pre-merged dict.
 
-    Raises FileNotFoundError if path does not exist.
-    Raises pydantic.ValidationError if the YAML is structurally invalid.
+    - When ``source`` is a str/Path: load YAML from that file.
+      Raises FileNotFoundError if the path does not exist.
+    - When ``source`` is a dict: treat it as the already-merged config.
+
+    Raises pydantic.ValidationError if the data is structurally invalid.
     """
-    p = Path(path)
+    if isinstance(source, dict):
+        return SpectreConfig(**source)
+
+    p = Path(source)
     if not p.exists():
-        raise FileNotFoundError(f"Config not found: {path}")
+        raise FileNotFoundError(f"Config not found: {source}")
 
     raw = yaml.safe_load(p.read_text())
     return SpectreConfig(**raw)
