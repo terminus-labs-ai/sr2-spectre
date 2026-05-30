@@ -254,10 +254,10 @@ class TestEndToEnd:
         mock_llm = _MockLLMRecorder()
 
         pipeline = PipelineConfig(layers=[
-            LayerConfig(name="system", resolvers=[
+            LayerConfig(name="system", target="system", resolvers=[
                 ResolverConfig(type="static", config={"text": "You are helpful."})
             ]),
-            LayerConfig(name="tools", resolvers=[], tool_providers=[
+            LayerConfig(name="tools", target="tools", resolvers=[], tool_providers=[
                 ToolProviderConfig(type="spectre_tools")
             ]),
         ])
@@ -287,10 +287,10 @@ class TestEndToEnd:
         mock_llm = _MockLLMRecorder()
 
         pipeline = PipelineConfig(layers=[
-            LayerConfig(name="system", resolvers=[
+            LayerConfig(name="system", target="system", resolvers=[
                 ResolverConfig(type="static", config={"text": "You are helpful."})
             ]),
-            LayerConfig(name="tools", resolvers=[], tool_providers=[
+            LayerConfig(name="tools", target="tools", resolvers=[], tool_providers=[
                 ToolProviderConfig(type="spectre_tools")
             ]),
         ])

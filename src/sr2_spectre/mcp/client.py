@@ -74,9 +74,15 @@ class MCPClient:
     async def close(self) -> None:
         """Exit session and transport context managers. Safe to call before connect()."""
         if self._session_ctx is not None:
-            await self._session_ctx.__aexit__(None, None, None)
+            try:
+                await self._session_ctx.__aexit__(None, None, None)
+            except (RuntimeError, GeneratorExit):
+                pass  # Cancel scope mismatch on shutdown — ignore
             self._session_ctx = None
 
         if self._transport_ctx is not None:
-            await self._transport_ctx.__aexit__(None, None, None)
+            try:
+                await self._transport_ctx.__aexit__(None, None, None)
+            except (RuntimeError, GeneratorExit):
+                pass  # stdio_client cancel scope crash on shutdown — ignore
             self._transport_ctx = None

@@ -69,6 +69,7 @@ class TestSpectreConfig:
             "layers": [
                 {
                     "name": "system",
+                    "target": "system",
                     "resolvers": [{"type": "static", "config": {"text": "Hello"}}],
                 }
             ]
@@ -152,15 +153,18 @@ class TestLoadConfig:
             "  token_budget: 100000\n"
             "  layers:\n"
             "    - name: system\n"
+            "      target: system\n"
             "      resolvers:\n"
             "        - type: static\n"
             "          config:\n"
             "            text: You are a helpful assistant.\n"
             "    - name: tools\n"
+            "      target: tools\n"
             "      resolvers: []\n"
             "      tool_providers:\n"
             "        - type: spectre_tools\n"
             "    - name: conversation\n"
+            "      target: messages\n"
             "      resolvers:\n"
             "        - type: session\n"
             "        - type: input\n"

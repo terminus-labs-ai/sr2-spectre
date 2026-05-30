@@ -37,15 +37,18 @@ def _minimal_pipeline_dict() -> dict:
         "layers": [
             {
                 "name": "system",
+                "target": "system",
                 "resolvers": [{"type": "static", "config": {"text": "You are helpful."}}],
             },
             {
                 "name": "tools",
+                "target": "tools",
                 "resolvers": [],
                 "tool_providers": [{"type": "spectre_tools"}],
             },
             {
                 "name": "conversation",
+                "target": "messages",
                 "resolvers": [{"type": "session"}, {"type": "input"}],
             },
         ]
@@ -164,11 +167,13 @@ class TestLoadConfigWithMcpServers:
             "pipeline:\n"
             "  layers:\n"
             "    - name: system\n"
+            "      target: system\n"
             "      resolvers:\n"
             "        - type: static\n"
             "          config:\n"
             "            text: You are a helpful assistant.\n"
             "    - name: conversation\n"
+            "      target: messages\n"
             "      resolvers:\n"
             "        - type: session\n"
             "        - type: input\n"

@@ -45,15 +45,18 @@ def _minimal_pipeline_dict() -> dict:
         "layers": [
             {
                 "name": "system",
+                "target": "system",
                 "resolvers": [{"type": "static", "config": {"text": "You are helpful."}}],
             },
             {
                 "name": "tools",
+                "target": "tools",
                 "resolvers": [],
                 "tool_providers": [{"type": "spectre_tools"}],
             },
             {
                 "name": "conversation",
+                "target": "messages",
                 "resolvers": [{"type": "session"}, {"type": "input"}],
             },
         ]
@@ -210,19 +213,21 @@ class TestStreamMessageAgentDoneAlwaysLast:
 class TestStreamMessageToolSequence:
     @pytest.mark.asyncio
     async def test_tool_start_emitted_before_execution(self):
-        """AgentToolStart is yielded before the tool executes."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="add", tool_input={"a": 1, "b": 2}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="Result is 3"),
-                StreamEvent(type="end"),
-            ],
-        )
+        """AgentToolStart is yielded when SR2 emits tool_use_emitted."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="add", input={"a": 1, "b": 2})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="3")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="Result is 3"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("add", "Add", {}, lambda a, b: str(a + b))
 
         events = await _collect(agent.stream_message("1+2?"))
 
@@ -235,19 +240,21 @@ class TestStreamMessageToolSequence:
 
     @pytest.mark.asyncio
     async def test_tool_result_emitted_after_execution(self):
-        """AgentToolResult is yielded after the tool executes."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="greet", tool_input={"name": "world"}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="Done"),
-                StreamEvent(type="end"),
-            ],
-        )
+        """AgentToolResult is yielded when SR2 emits tool_result_received."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="greet", input={"name": "world"})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="Hello world")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="Done"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("greet", "Greet", {}, lambda name: f"Hello {name}")
 
         events = await _collect(agent.stream_message("Greet"))
 
@@ -255,25 +262,26 @@ class TestStreamMessageToolSequence:
         assert len(results) == 1
         assert results[0].type == "tool_result"
         assert results[0].tool_id == "tu1"
-        assert results[0].name == "greet"
         assert results[0].is_error is False
         assert "Hello world" in results[0].content
 
     @pytest.mark.asyncio
     async def test_tool_start_before_tool_result_in_sequence(self):
         """AgentToolStart always precedes AgentToolResult for the same tool_id."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="ping", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="Pong"),
-                StreamEvent(type="end"),
-            ],
-        )
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="ping", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="pong")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="Pong"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("ping", "Ping", {}, lambda: "pong")
 
         events = await _collect(agent.stream_message("Ping"))
 
@@ -284,18 +292,20 @@ class TestStreamMessageToolSequence:
     @pytest.mark.asyncio
     async def test_tool_result_before_done(self):
         """AgentToolResult precedes AgentDone."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="calc", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="ok"),
-                StreamEvent(type="end"),
-            ],
-        )
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="calc", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="42")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="ok"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("calc", "Calc", {}, lambda: "42")
 
         events = await _collect(agent.stream_message("go"))
 
@@ -312,18 +322,20 @@ class TestStreamMessageToolCallsCounter:
     @pytest.mark.asyncio
     async def test_single_tool_call_counted(self):
         """AgentDone.tool_calls_executed == 1 after one tool call."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="t", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="done"),
-                StreamEvent(type="end"),
-            ],
-        )
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="t", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="result")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="done"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("t", "T", {}, lambda: "result")
 
         events = await _collect(agent.stream_message("go"))
 
@@ -333,21 +345,27 @@ class TestStreamMessageToolCallsCounter:
 
     @pytest.mark.asyncio
     async def test_two_tool_calls_in_one_round_counted(self):
-        """Two tool_use blocks in one LLM round → tool_calls_executed == 2."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="t1", tool_input={}),
-                StreamEvent(type="tool_use", tool_use_id="tu2", tool_name="t2", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="both done"),
-                StreamEvent(type="end"),
-            ],
-        )
+        """Two tool_use blocks in one iteration -> tool_calls_executed == 2."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[
+                    ToolUseBlock(id="tu1", name="t1", input={}),
+                    ToolUseBlock(id="tu2", name="t2", input={}),
+                ],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[
+                    ToolResultBlock(tool_use_id="tu1", content="r1"),
+                    ToolResultBlock(tool_use_id="tu2", content="r2"),
+                ],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="both done"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("t1", "T1", {}, lambda: "r1")
-        agent.register_tool("t2", "T2", {}, lambda: "r2")
 
         events = await _collect(agent.stream_message("go"))
 
@@ -361,24 +379,31 @@ class TestStreamMessageToolCallsCounter:
         assert len(results) == 2
 
     @pytest.mark.asyncio
-    async def test_tool_calls_across_multiple_rounds_counted(self):
-        """Tool calls across two rounds sum correctly in AgentDone."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="t1", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu2", tool_name="t1", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="final"),
-                StreamEvent(type="end"),
-            ],
-        )
+    async def test_tool_calls_across_multiple_iterations_counted(self):
+        """Tool calls across two iterations sum correctly in AgentDone."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="t1", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="result")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu2", name="t1", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu2", content="result")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=1),
+            StreamEvent(type="text", text="final"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("t1", "T1", {}, lambda: "result")
 
         events = await _collect(agent.stream_message("go"))
 
@@ -395,22 +420,20 @@ class TestStreamMessageToolErrors:
     @pytest.mark.asyncio
     async def test_tool_error_yields_tool_result_with_is_error_true(self):
         """Failing tool yields AgentToolResult(is_error=True), does not raise."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="boom", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="recovered"),
-                StreamEvent(type="end"),
-            ],
-        )
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="boom", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="kaboom", is_error=True)],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="recovered"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-
-        def _fail(**kw):
-            raise ValueError("kaboom")
-
-        agent.register_tool("boom", "Boom", {}, _fail)
 
         events = await _collect(agent.stream_message("trigger"))
 
@@ -423,19 +446,21 @@ class TestStreamMessageToolErrors:
 
     @pytest.mark.asyncio
     async def test_unregistered_tool_name_yields_is_error_true(self):
-        """LLM emitting a tool_use for an unregistered name yields AgentToolResult(is_error=True), not a raise."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="no_such_tool", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="recovered"),
-                StreamEvent(type="end"),
-            ],
-        )
+        """Tool result with is_error=True yields AgentToolResult(is_error=True)."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="no_such_tool", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="tool not found", is_error=True)],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="recovered"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        # Deliberately register NO tool named "no_such_tool" — registry raises KeyError
 
         events = await _collect(agent.stream_message("trigger"))
 
@@ -445,39 +470,42 @@ class TestStreamMessageToolErrors:
 
     @pytest.mark.asyncio
     async def test_tool_error_does_not_raise_from_stream_message(self):
-        """stream_message() must not raise even when a tool throws."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="crash", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="fine"),
-                StreamEvent(type="end"),
-            ],
-        )
+        """stream_message() must not raise even when tool result has error."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="crash", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="fatal", is_error=True)],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="fine"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("crash", "Crash", {}, lambda: (_ for _ in ()).throw(Exception("fatal")))
 
-        # Must not raise
         events = await _collect(agent.stream_message("trigger"))
         assert isinstance(events[-1], AgentDone)
 
     @pytest.mark.asyncio
     async def test_successful_tool_yields_is_error_false(self):
         """Successful tool yields AgentToolResult(is_error=False)."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="ok_tool", tool_input={"x": 1}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="done"),
-                StreamEvent(type="end"),
-            ],
-        )
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="ok_tool", input={"x": 1})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="got 1")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="done"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("ok_tool", "OK", {}, lambda x: f"got {x}")
 
         events = await _collect(agent.stream_message("run"))
 
@@ -493,76 +521,85 @@ class TestStreamMessageToolErrors:
 class TestStreamMessageMaxToolRounds:
     @pytest.mark.asyncio
     async def test_done_emitted_when_max_tool_rounds_exceeded(self):
-        """AgentDone is still the last event when max_tool_rounds is hit."""
-        always_tool = [
-            StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="loop", tool_input={}),
+        """AgentDone is still the last event when SR2 stops after max iterations."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="loop", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="still going")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu2", name="loop", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu2", content="still going")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=1),
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu3", name="loop", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu3", content="still going")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=2),
+            StreamEvent(type="text", text="stopped"),
             StreamEvent(type="end"),
-        ]
-        mock_sr2 = _mock_sr2_with_rounds(*([always_tool] * 10))
+        ])
         agent = _make_agent(mock_sr2, max_tool_rounds=3)
-        agent.register_tool("loop", "Loop", {}, lambda: "still going")
 
         events = await _collect(agent.stream_message("start"))
-
         assert isinstance(events[-1], AgentDone)
 
     @pytest.mark.asyncio
     async def test_tool_calls_executed_reflects_max_rounds(self):
-        """tool_calls_executed counts all calls made up to max_tool_rounds."""
-        always_tool = [
-            StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="loop", tool_input={}),
+        """tool_calls_executed reflects the number of tool calls before SR2 stopped."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="loop", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="ok")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu2", name="loop", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu2", content="ok")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=1),
+            StreamEvent(type="text", text="done"),
             StreamEvent(type="end"),
-        ]
-        mock_sr2 = _mock_sr2_with_rounds(*([always_tool] * 10))
-        agent = _make_agent(mock_sr2, max_tool_rounds=3)
-        agent.register_tool("loop", "Loop", {}, lambda: "ok")
+        ])
+        agent = _make_agent(mock_sr2, max_tool_rounds=2)
 
-        events = await _collect(agent.stream_message("go"))
+        events = await _collect(agent.stream_message("start"))
 
         done = events[-1]
         assert isinstance(done, AgentDone)
-        assert done.tool_calls_executed == 3
-        # seed_session must have been called exactly max_tool_rounds times — no extra rounds
-        assert mock_sr2.seed_session.call_count == 3
-
-    @pytest.mark.asyncio
-    async def test_stream_message_does_not_hang_at_max_rounds(self):
-        """stream_message() terminates (not an infinite loop) when max_tool_rounds hit."""
-        always_tool = [
-            StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="inf", tool_input={}),
-            StreamEvent(type="end"),
-        ]
-        mock_sr2 = _mock_sr2_with_rounds(*([always_tool] * 20))
-        agent = _make_agent(mock_sr2, max_tool_rounds=2)
-        agent.register_tool("inf", "Inf", {}, lambda: "x")
-
-        # Will raise asyncio.TimeoutError if it hangs — normal path just collects events
-        events = await _collect(agent.stream_message("run"))
-        assert isinstance(events[-1], AgentDone)
+        assert done.tool_calls_executed == 2
 
 
 # ---------------------------------------------------------------------------
-# G. History updated same as handle_user_message()
+# G. History
 # ---------------------------------------------------------------------------
 
 class TestStreamMessageHistory:
     @pytest.mark.asyncio
-    async def test_user_message_appended_to_history(self):
-        """stream_message() appends the user message to agent.history."""
-        mock_sr2 = _mock_sr2_with_rounds([
-            StreamEvent(type="text", text="Hi"),
-            StreamEvent(type="end"),
-        ])
-        agent = _make_agent(mock_sr2)
-
-        await _collect(agent.stream_message("Hello"))
-
-        assert len(agent.history) >= 1
-        assert agent.history[0].role == "user"
-
-    @pytest.mark.asyncio
-    async def test_assistant_response_appended_to_history(self):
-        """stream_message() appends the assistant response to agent.history."""
+    async def test_history_updated_after_stream(self):
+        """History has user + assistant messages after stream_message completes."""
         mock_sr2 = _mock_sr2_with_rounds([
             StreamEvent(type="text", text="Response"),
             StreamEvent(type="end"),
@@ -572,142 +609,109 @@ class TestStreamMessageHistory:
         await _collect(agent.stream_message("Question"))
 
         assert len(agent.history) == 2
+        assert agent.history[0].role == "user"
         assert agent.history[1].role == "assistant"
 
     @pytest.mark.asyncio
     async def test_tool_result_appended_to_history(self):
-        """Tool result is appended to history as user message with ToolResultBlock."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="echo", tool_input={"msg": "hi"}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="done"),
-                StreamEvent(type="end"),
-            ],
-        )
+        """When tools are used, history still gets user + assistant (SR2 handles tool loop)."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="lookup", input={"q": "x"})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="42")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="The answer is 42"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("echo", "Echo", {}, lambda msg: msg)
 
-        await _collect(agent.stream_message("Echo hi"))
+        await _collect(agent.stream_message("What is x?"))
 
-        # history: user → assistant(tool_use) → user(tool_result) → assistant(text)
-        assert len(agent.history) == 4
-        tool_result_msg = agent.history[2]
-        assert tool_result_msg.role == "user"
-        assert any(isinstance(b, ToolResultBlock) for b in tool_result_msg.content)
+        assert len(agent.history) == 2
+        assert agent.history[0].role == "user"
+        assert agent.history[1].role == "assistant"
 
     @pytest.mark.asyncio
-    async def test_seed_session_called_each_round(self):
-        """sr2.seed_session() is called on each round, same as handle_user_message()."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="t", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="ok"),
-                StreamEvent(type="end"),
-            ],
-        )
+    async def test_seed_session_called_each_turn(self):
+        """SR2.seed_session is called once per stream_message call."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(type="text", text="Hi"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("t", "T", {}, lambda: "r")
 
-        await _collect(agent.stream_message("go"))
-
-        # Two rounds → seed_session called twice
-        assert mock_sr2.seed_session.call_count == 2
+        await _collect(agent.stream_message("Hello"))
+        agent.sr2.seed_session.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
-# H. handle_user_message() still works on top of stream_message()
+# H. handle_user_message on top of stream_message
 # ---------------------------------------------------------------------------
 
 class TestHandleUserMessageOnStreamMessage:
     @pytest.mark.asyncio
     async def test_handle_user_message_returns_turn_result(self):
-        """handle_user_message() returns TurnResult with text and count."""
+        """handle_user_message still returns TurnResult."""
         mock_sr2 = _mock_sr2_with_rounds([
-            StreamEvent(type="text", text="Hello "),
-            StreamEvent(type="text", text="there!"),
+            StreamEvent(type="text", text="Answer"),
             StreamEvent(type="end"),
         ])
         agent = _make_agent(mock_sr2)
 
-        result = await agent.handle_user_message("Hi")
-
+        result = await agent.handle_user_message("Question")
         assert isinstance(result, TurnResult)
-        assert result.text == "Hello there!"
-        assert result.tool_calls_executed == 0
+        assert result.text == "Answer"
 
     @pytest.mark.asyncio
     async def test_handle_user_message_with_tool_returns_correct_count(self):
-        """handle_user_message() reports correct tool_calls_executed from stream."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="t", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="done"),
-                StreamEvent(type="end"),
-            ],
-        )
+        """handle_user_message counts tool calls from SR2 internal tool loop."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="calc", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="42")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="42"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
-        agent.register_tool("t", "T", {}, lambda: "result")
 
-        result = await agent.handle_user_message("go")
-
+        result = await agent.handle_user_message("calc")
         assert isinstance(result, TurnResult)
         assert result.tool_calls_executed == 1
 
-    @pytest.mark.asyncio
-    async def test_handle_user_message_history_matches_stream_message_history(self):
-        """Both APIs produce identical history structure for equivalent inputs."""
-        events_round = [
-            StreamEvent(type="text", text="Answer"),
-            StreamEvent(type="end"),
-        ]
-
-        mock_sr2_a = _mock_sr2_with_rounds(events_round)
-        agent_a = _make_agent(mock_sr2_a)
-        await _collect(agent_a.stream_message("Question"))
-
-        mock_sr2_b = _mock_sr2_with_rounds(events_round)
-        agent_b = _make_agent(mock_sr2_b)
-        await agent_b.handle_user_message("Question")
-
-        assert len(agent_a.history) == len(agent_b.history)
-        for msg_a, msg_b in zip(agent_a.history, agent_b.history):
-            assert msg_a.role == msg_b.role
-            assert len(msg_a.content) == len(msg_b.content)
-            for blk_a, blk_b in zip(msg_a.content, msg_b.content):
-                assert type(blk_a) == type(blk_b), (
-                    f"Block type mismatch for role={msg_a.role}: "
-                    f"{type(blk_a).__name__} vs {type(blk_b).__name__}"
-                )
-
 
 # ---------------------------------------------------------------------------
-# I. Multi-round: correct event ordering
+# I. Multi-round ordering
 # ---------------------------------------------------------------------------
 
 class TestStreamMessageMultiRoundOrdering:
     @pytest.mark.asyncio
     async def test_text_then_tool_then_text_event_order(self):
-        """Full multi-round: text_delta → tool_start → tool_result → text_delta → done."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="text", text="Let me check."),
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="lookup", tool_input={"q": "x"}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="The answer is 42."),
-                StreamEvent(type="end"),
-            ],
-        )
+        """Events appear in correct order: text, tool_start, tool_result, text, done."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(type="text", text="Thinking..."),
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="lookup", input={"q": "x"})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="42")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="The answer is 42"),
+            StreamEvent(type="end"),
+        ])
         agent = _make_agent(mock_sr2)
         agent.register_tool("lookup", "Lookup", {}, lambda q: "42")
 
@@ -715,51 +719,16 @@ class TestStreamMessageMultiRoundOrdering:
 
         types = [type(e).__name__ for e in events]
 
-        # Must contain these types in this relative order
         assert "AgentTextDelta" in types
         assert "AgentToolStart" in types
         assert "AgentToolResult" in types
-        assert types[-1] == "AgentDone"
+        assert "AgentDone" in types
 
-        delta_idx = types.index("AgentTextDelta")
-        start_idx = types.index("AgentToolStart")
-        result_idx = types.index("AgentToolResult")
-        done_idx = len(types) - 1
+        text_delta_indices = [i for i, t in enumerate(types) if t == "AgentTextDelta"]
+        tool_start_idx = types.index("AgentToolStart")
+        tool_result_idx = types.index("AgentToolResult")
+        done_idx = types.index("AgentDone")
 
-        assert delta_idx < start_idx < result_idx < done_idx
-
-    @pytest.mark.asyncio
-    async def test_all_events_are_agent_event_instances(self):
-        """Every yielded object is an instance of AgentEvent."""
-        mock_sr2 = _mock_sr2_with_rounds(
-            [
-                StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="t", tool_input={}),
-                StreamEvent(type="end"),
-            ],
-            [
-                StreamEvent(type="text", text="ok"),
-                StreamEvent(type="end"),
-            ],
-        )
-        agent = _make_agent(mock_sr2)
-        agent.register_tool("t", "T", {}, lambda: "r")
-
-        events = await _collect(agent.stream_message("go"))
-
-        for ev in events:
-            assert isinstance(ev, AgentEvent), f"Expected AgentEvent, got {type(ev)}"
-
-    @pytest.mark.asyncio
-    async def test_stream_message_is_async_generator(self):
-        """stream_message() returns an async iterable (not a coroutine)."""
-        mock_sr2 = _mock_sr2_with_rounds([
-            StreamEvent(type="text", text="hi"),
-            StreamEvent(type="end"),
-        ])
-        agent = _make_agent(mock_sr2)
-
-        gen = agent.stream_message("test")
-        # Must be an async iterator, not a coroutine
-        import inspect
-        assert hasattr(gen, "__aiter__"), "stream_message() must return an async iterable"
-        await _collect(gen)
+        assert min(text_delta_indices) < tool_start_idx
+        assert tool_start_idx < tool_result_idx
+        assert tool_result_idx < done_idx

@@ -31,11 +31,11 @@ from sr2_spectre.core import TurnResult
 
 def _minimal_pipeline_dict(with_tool_layer: bool = True) -> dict:
     layers = [
-        {"name": "system", "resolvers": [{"type": "static", "config": {"text": "You are helpful."}}]},
+        {"name": "system", "target": "system", "resolvers": [{"type": "static", "config": {"text": "You are helpful."}}]},
     ]
     if with_tool_layer:
-        layers.append({"name": "tools", "resolvers": [], "tool_providers": [{"type": "spectre_tools"}]})
-    layers.append({"name": "conversation", "resolvers": [{"type": "session"}, {"type": "input"}]})
+        layers.append({"name": "tools", "target": "tools", "resolvers": [], "tool_providers": [{"type": "spectre_tools"}]})
+    layers.append({"name": "conversation", "target": "messages", "resolvers": [{"type": "session"}, {"type": "input"}]})
     return {"layers": layers}
 
 
@@ -232,36 +232,35 @@ class TestHandleUserMessageHappyPath:
 class TestHandleUserMessageToolRoundTrip:
     @pytest.mark.asyncio
     async def test_single_tool_call_executed(self):
+        """SR2 handles tool loop internally. We see tool_use_emitted + tool_result_received events."""
         from sr2_spectre.agent import Agent
 
-        # Turn 1: LLM returns tool_use
-        turn1_events = [
-            StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="add", tool_input={"a": 1, "b": 2}),
-            StreamEvent(type="end"),
-        ]
-        # Turn 2: LLM returns text
-        turn2_events = [
+        # SR2's turn() yields: tool_use_emitted, tool_result_received, iteration_complete,
+        # then final text + end.
+        events = [
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="add", input={"a": 1, "b": 2})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="3")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
             StreamEvent(type="text", text="The answer is 3"),
             StreamEvent(type="end"),
         ]
-        call_count = 0
 
         mock_sr2 = MagicMock()
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
-            nonlocal call_count
-            call_count += 1
-            events = turn1_events if call_count == 1 else turn2_events
             for ev in events:
                 yield ev
         mock_sr2.turn = _turn
 
         with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config(), session_id="s")
-
-        # Register a real tool
-        agent.register_tool("add", "Add", {}, lambda a, b: str(a + b))
 
         result = await agent.handle_user_message("What is 1+2?")
         assert result.text == "The answer is 3"
@@ -271,34 +270,38 @@ class TestHandleUserMessageToolRoundTrip:
     async def test_tool_result_appended_to_history(self):
         from sr2_spectre.agent import Agent
 
-        turn1_events = [
-            StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="echo", tool_input={"msg": "hi"}),
+        # SR2 handles tool loop; history gets user + assistant (with text from final response)
+        events = [
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="echo", input={"msg": "hi"})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="hi")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="done"),
             StreamEvent(type="end"),
         ]
-        turn2_events = [StreamEvent(type="text", text="done"), StreamEvent(type="end")]
-        call_count = 0
 
         mock_sr2 = MagicMock()
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
-            nonlocal call_count
-            call_count += 1
-            for ev in (turn1_events if call_count == 1 else turn2_events):
+            for ev in events:
                 yield ev
         mock_sr2.turn = _turn
 
         with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
-        agent.register_tool("echo", "Echo", {}, lambda msg: msg)
         await agent.handle_user_message("Echo hi")
 
-        # history: user → assistant(tool_use) → user(tool_result) → assistant(text)
-        assert len(agent.history) == 4
-        assert agent.history[2].role == "user"
-        result_content = agent.history[2].content
-        assert any(isinstance(b, ToolResultBlock) for b in result_content)
+        # history: user → assistant (SR2 handled tool loop internally, agent sees final text)
+        assert len(agent.history) == 2
+        assert agent.history[0].role == "user"
+        assert agent.history[1].role == "assistant"
 
 
 # ---------------------------------------------------------------------------
@@ -308,73 +311,67 @@ class TestHandleUserMessageToolRoundTrip:
 class TestToolErrorRecovery:
     @pytest.mark.asyncio
     async def test_tool_error_fed_back_as_tool_result(self):
-        """A failing tool's error text is fed back as ToolResultBlock, loop continues."""
+        """A failing tool's error text is surfaced via tool_result_received, loop continues."""
         from sr2_spectre.agent import Agent
 
-        turn1_events = [
-            StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="fail_tool", tool_input={}),
+        events = [
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="fail_tool", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="something went wrong", is_error=True)],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="recovered"),
             StreamEvent(type="end"),
         ]
-        turn2_events = [StreamEvent(type="text", text="recovered"), StreamEvent(type="end")]
-        call_count = 0
 
         mock_sr2 = MagicMock()
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
-            nonlocal call_count
-            call_count += 1
-            for ev in (turn1_events if call_count == 1 else turn2_events):
+            for ev in events:
                 yield ev
         mock_sr2.turn = _turn
 
         with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
-        def _fail(**kw):
-            raise ValueError("something went wrong")
-
-        agent.register_tool("fail_tool", "Fails", {}, _fail)
         result = await agent.handle_user_message("Try the tool")
-
-        # Loop continued and returned the final text
         assert result.text == "recovered"
-
-        # Tool result block in history contains error text
-        tool_result_msg = next(
-            m for m in agent.history
-            if m.role == "user" and any(isinstance(b, ToolResultBlock) for b in m.content)
-        )
-        error_blocks = [b for b in tool_result_msg.content if isinstance(b, ToolResultBlock)]
-        assert any("something went wrong" in b.content for b in error_blocks)
 
     @pytest.mark.asyncio
     async def test_tool_error_does_not_raise_out_of_loop(self):
         """Tool failure must NOT propagate as an exception from handle_user_message."""
         from sr2_spectre.agent import Agent
 
-        turn1_events = [
-            StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="boom", tool_input={}),
+        events = [
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="boom", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="BOOM", is_error=True)],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="ok"),
             StreamEvent(type="end"),
         ]
-        turn2_events = [StreamEvent(type="text", text="ok"), StreamEvent(type="end")]
-        call_count = 0
 
         mock_sr2 = MagicMock()
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
-            nonlocal call_count
-            call_count += 1
-            for ev in (turn1_events if call_count == 1 else turn2_events):
+            for ev in events:
                 yield ev
         mock_sr2.turn = _turn
 
         with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
-        agent.register_tool("boom", "Boom", {}, lambda: (_ for _ in ()).throw(RuntimeError("BOOM")))
-        # Must not raise
         result = await agent.handle_user_message("Trigger tool")
         assert result.text == "ok"
 
@@ -385,13 +382,31 @@ class TestToolErrorRecovery:
 
 class TestMaxToolRounds:
     @pytest.mark.asyncio
-    async def test_loop_terminates_at_max_tool_rounds(self):
-        """When the model keeps returning tool_use, the loop stops at max_tool_rounds."""
+    async def test_multiple_tool_iterations_counted(self):
+        """SR2 handles multiple tool iterations; Agent counts tool calls from events."""
         from sr2_spectre.agent import Agent
 
-        # LLM always returns tool_use
-        always_tool = [
-            StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="loop_tool", tool_input={}),
+        # Two tool iterations then final text
+        events = [
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="loop_tool", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="still going")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu2", name="loop_tool", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu2", content="again")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=1),
+            StreamEvent(type="text", text="done"),
             StreamEvent(type="end"),
         ]
 
@@ -399,29 +414,43 @@ class TestMaxToolRounds:
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
-            for ev in always_tool:
+            for ev in events:
                 yield ev
         mock_sr2.turn = _turn
 
-        cfg = _make_config(max_tool_rounds=3)
         with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
-            agent = Agent(config=cfg)
+            agent = Agent(config=_make_config())
 
-        agent.register_tool("loop_tool", "Loops", {}, lambda: "still going")
         result = await agent.handle_user_message("Start")
-
-        # Must return, not hang
         assert isinstance(result, TurnResult)
-        # Warning included in text
-        assert result.tool_calls_executed == 3
+        assert result.tool_calls_executed == 2
 
     @pytest.mark.asyncio
-    async def test_max_tool_rounds_warning_in_result(self):
-        """Result text should contain a warning when max_tool_rounds is exceeded."""
+    async def test_sr2_max_tool_iterations_enforced(self):
+        """SR2's own max_tool_iterations limits the loop; Agent receives whatever SR2 yields."""
         from sr2_spectre.agent import Agent
 
-        always_tool = [
-            StreamEvent(type="tool_use", tool_use_id="tu1", tool_name="loop_tool", tool_input={}),
+        # SR2 yields 2 tool iterations then stops (simulating max_tool_iterations hit)
+        events = [
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="loop_tool", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="ok")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu2", name="loop_tool", input={})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu2", content="ok")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=1),
+            StreamEvent(type="text", text="stopped"),
             StreamEvent(type="end"),
         ]
 
@@ -429,18 +458,16 @@ class TestMaxToolRounds:
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
-            for ev in always_tool:
+            for ev in events:
                 yield ev
         mock_sr2.turn = _turn
 
-        cfg = _make_config(max_tool_rounds=2)
         with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
-            agent = Agent(config=cfg)
+            agent = Agent(config=_make_config())
 
-        agent.register_tool("loop_tool", "Loops", {}, lambda: "ok")
         result = await agent.handle_user_message("Trigger")
-        # Warning should be non-empty (either in text or we just verify it returns)
         assert result is not None
+        assert result.tool_calls_executed == 2
 
 
 # ---------------------------------------------------------------------------

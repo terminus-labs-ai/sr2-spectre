@@ -16,7 +16,7 @@ Each round: seed prior history → turn(increment) → reconstruct assistant tur
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 
 if TYPE_CHECKING:
     from sr2.pipeline.tracing import Tracer
@@ -36,6 +36,9 @@ from sr2_spectre.events import (
 )
 from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
 from sr2_spectre.tools.registry import ToolRegistry
+
+# Type alias for SR2's tool_executor callback
+ToolExecutor = Callable[[ToolUseBlock], Awaitable[ToolResultBlock]]
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +87,7 @@ class Agent:
         )
 
         # SR2 owns context compilation, tool definition injection, and LLM calls
+        # Spectre provides the tool_executor callback so SR2 can execute tools
         self.sr2 = SR2(
             pipeline_config=config.pipeline,
             llm={"default": llm_callable},
@@ -91,7 +95,17 @@ class Agent:
             session_id=self.session_id,
             extras={"tool_registry": self.registry},
             tracer=tracer,
+            tool_executor=self._execute_tool,
         )
+
+    async def _execute_tool(self, block: ToolUseBlock) -> ToolResultBlock:
+        """SR2 tool_executor callback. Executes a tool via the registry."""
+        try:
+            out = await self.registry.execute(block.name, block.input)
+            return ToolResultBlock(tool_use_id=block.id, content=str(out))
+        except Exception as exc:
+            logger.warning("Tool %r failed: %s", block.name, exc)
+            return ToolResultBlock(tool_use_id=block.id, content=f"ERROR: {exc}", is_error=True)
 
     async def initialize(self) -> None:
         """Connect all MCP clients and register their tool bridges into the registry.
@@ -115,82 +129,46 @@ class Agent:
     async def stream_message(self, text: str) -> AsyncIterator[AgentEvent]:
         """Stream agent events for a user message.
 
+        SR2 handles the tool loop internally via tool_executor. We consume
+        its stream events and translate them to AgentEvent types for the TUI.
+
         Yields AgentTextDelta, AgentToolStart, AgentToolResult events during
         processing, and always yields AgentDone as the final event.
-
-        Protocol mirrors handle_user_message() but surfaces events instead of
-        accumulating them.
         """
         self.history.append(Message(role="user", content=[TextBlock(text=text)]))
 
-        max_rounds = self.config.agent.max_tool_rounds
+        prior = self.history[:-1]
+        increment = self.history[-1].content
+        self.sr2.seed_session(prior)
+
+        text_acc: list[str] = []
         total_tool_calls = 0
 
-        for _round in range(max_rounds):
-            prior = self.history[:-1]
-            increment = self.history[-1].content
-
-            self.sr2.seed_session(prior)
-
-            text_acc: list[str] = []
-            tool_uses: list[ToolUseBlock] = []
-
-            async for ev in self.sr2.turn(user_input=increment):
-                if ev.type == "text" and ev.text:
-                    text_acc.append(ev.text)
-                    yield AgentTextDelta(text=ev.text)
-                elif ev.type == "tool_use":
-                    tool_uses.append(
-                        ToolUseBlock(
-                            id=ev.tool_use_id,
-                            name=ev.tool_name,
-                            input=ev.tool_input,
-                        )
+        async for ev in self.sr2.turn(user_input=increment):
+            if ev.type == "text" and ev.text:
+                text_acc.append(ev.text)
+                yield AgentTextDelta(text=ev.text)
+            elif ev.type == "tool_use_emitted" and ev.tool_uses:
+                for tu in ev.tool_uses:
+                    total_tool_calls += 1
+                    yield AgentToolStart(tool_id=tu.id, name=tu.name, input=tu.input)
+            elif ev.type == "tool_result_received" and ev.tool_results:
+                for tr in ev.tool_results:
+                    yield AgentToolResult(
+                        tool_id=tr.tool_use_id,
+                        name="",  # SR2 doesn't carry name on result; that's OK for TUI
+                        content=tr.content,
+                        is_error=getattr(tr, "is_error", False),
                     )
+            # Suppress iteration_complete, usage, end events from leaking to TUI
 
-            last_text = "".join(text_acc)
-            assistant_content = (
-                ([TextBlock(text=last_text)] if last_text else []) + tool_uses
-            )
-            self.history.append(Message(role="assistant", content=assistant_content))
+        last_text = "".join(text_acc)
+        assistant_content = [TextBlock(text=last_text)] if last_text else []
+        self.history.append(Message(role="assistant", content=assistant_content))
 
-            if not tool_uses:
-                logger.debug(
-                    "Turn complete after %d round(s), %d tool calls",
-                    _round + 1,
-                    total_tool_calls,
-                )
-                yield AgentDone(tool_calls_executed=total_tool_calls)
-                return
-
-            # Execute tools — errors caught and surfaced as AgentToolResult(is_error=True)
-            result_blocks: list[ToolResultBlock] = []
-            for tu in tool_uses:
-                total_tool_calls += 1
-                yield AgentToolStart(tool_id=tu.id, name=tu.name, input=tu.input)
-                try:
-                    out = await self.registry.execute(tu.name, tu.input)
-                    result_content = str(out)
-                    is_error = False
-                except Exception as exc:
-                    logger.warning("Tool %r failed: %s", tu.name, exc)
-                    result_content = f"ERROR: {exc}"
-                    is_error = True
-                yield AgentToolResult(
-                    tool_id=tu.id,
-                    name=tu.name,
-                    content=result_content,
-                    is_error=is_error,
-                )
-                result_blocks.append(
-                    ToolResultBlock(tool_use_id=tu.id, content=result_content)
-                )
-
-            self.history.append(Message(role="user", content=result_blocks))
-
-        # max_tool_rounds exhausted without a clean no-tool-call round
-        logger.warning(
-            "max_tool_rounds=%d exceeded for session %s", max_rounds, self.session_id
+        logger.debug(
+            "Turn complete, %d tool calls",
+            total_tool_calls,
         )
         yield AgentDone(tool_calls_executed=total_tool_calls)
 

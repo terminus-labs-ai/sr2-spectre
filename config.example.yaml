@@ -44,6 +44,7 @@ pipeline:
   layers:
     # System prompt layer
     - name: system
+      target: system
       resolvers:
         - type: static
           config:
@@ -53,12 +54,14 @@ pipeline:
 
     # Tool definitions layer — injects available tools into context
     - name: tools
+      target: tools
       resolvers: []
       tool_providers:
         - type: spectre_tools
 
     # Conversation history layer
     - name: conversation
+      target: messages
       resolvers:
         - type: session   # prior turns from this session
         - type: input     # current user message
