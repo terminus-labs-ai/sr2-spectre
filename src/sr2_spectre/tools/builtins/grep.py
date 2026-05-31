@@ -6,6 +6,19 @@ import fnmatch
 import os
 import re
 
+# Directories that are pruned from recursive walks by default. These are
+# never useful to grep and (e.g. a 221MB .venv) can blow up output.
+_DEFAULT_IGNORE_DIRS = {
+    ".venv",
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    "dist",
+    "build",
+}
+
 
 class GrepTool:
     """Search files for lines matching a pattern.
@@ -13,7 +26,14 @@ class GrepTool:
     Searches a single file or recursively walks a directory, emitting each
     matching line as ``{filepath}:{lineno}:{linetext}`` (1-based line numbers).
     Supports regex or literal matching and an optional basename glob filter.
-    Binary (undecodable) files are skipped silently.
+    Binary files (undecodable or containing a NUL byte) are skipped silently.
+
+    Output is bounded to keep an agent from being flooded:
+
+    * recursive walks prune ``ignore_dirs`` (merged with the built-in defaults);
+    * any matching line longer than ``max_line_length`` is truncated;
+    * at most ``max_matches`` matching lines are emitted, with a suppression
+      notice appended when there are more.
     """
 
     name = "grep"
@@ -47,8 +67,16 @@ class GrepTool:
         "required": ["pattern"],
     }
 
-    def __init__(self) -> None:
-        pass
+    def __init__(
+        self,
+        max_line_length: int = 500,
+        max_matches: int = 100,
+        ignore_dirs: set[str] | None = None,
+    ) -> None:
+        self.max_line_length = max_line_length
+        self.max_matches = max_matches
+        # Merge with defaults — never replace. Defaults always apply.
+        self.ignore_dirs = _DEFAULT_IGNORE_DIRS | (ignore_dirs or set())
 
     async def __call__(
         self,
@@ -56,14 +84,34 @@ class GrepTool:
         path: str = ".",
         glob: str | None = None,
         regex: bool = True,
+        ignore_dirs: set[str] | None = None,
     ) -> str:
+        # A per-call ignore set merges on top of the instance set (which itself
+        # already includes the defaults). Merge, never replace.
+        effective_ignore = self.ignore_dirs | (ignore_dirs or set())
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, _grep, pattern, path, glob, regex
+            None,
+            _grep,
+            pattern,
+            path,
+            glob,
+            regex,
+            self.max_line_length,
+            self.max_matches,
+            effective_ignore,
         )
 
 
-def _grep(pattern: str, path: str, glob: str | None, regex: bool) -> str:
+def _grep(
+    pattern: str,
+    path: str,
+    glob: str | None,
+    regex: bool,
+    max_line_length: int,
+    max_matches: int,
+    ignore_dirs: set[str],
+) -> str:
     if regex:
         compiled = re.compile(pattern)
     else:
@@ -71,7 +119,9 @@ def _grep(pattern: str, path: str, glob: str | None, regex: bool) -> str:
 
     if os.path.isdir(path):
         files = []
-        for dirpath, _dirnames, filenames in os.walk(path):
+        for dirpath, dirnames, filenames in os.walk(path):
+            # Prune ignored directories in place so os.walk won't descend.
+            dirnames[:] = [d for d in dirnames if d not in ignore_dirs]
             for filename in filenames:
                 if glob is not None and not fnmatch.fnmatch(filename, glob):
                     continue
@@ -83,18 +133,46 @@ def _grep(pattern: str, path: str, glob: str | None, regex: bool) -> str:
             files = [path]
 
     matches: list[str] = []
+    total_found = 0
+    capped = False
     for filepath in files:
         try:
-            with open(filepath, encoding="utf-8") as f:
-                for lineno, line in enumerate(f, start=1):
-                    text = line.rstrip("\n")
-                    if compiled.search(text):
-                        matches.append(f"{filepath}:{lineno}:{text}")
-        except UnicodeDecodeError:
-            continue
+            with open(filepath, "rb") as fb:
+                raw = fb.read()
         except OSError:
             continue
 
+        # Robust binary skip: a NUL byte means binary even if UTF-8-decodable.
+        if b"\x00" in raw:
+            continue
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+
+        for lineno, line in enumerate(content.splitlines(), start=1):
+            if compiled.search(line):
+                total_found += 1
+                if len(matches) < max_matches:
+                    text = _truncate_line(line, max_line_length)
+                    matches.append(f"{filepath}:{lineno}:{text}")
+                else:
+                    capped = True
+
     if not matches:
         return "No matches found."
-    return "\n".join(matches)
+
+    output = "\n".join(matches)
+    if capped:
+        omitted = total_found - len(matches)
+        output += (
+            f"\n[output limited to {len(matches)} matches; "
+            f"{omitted} more match(es) omitted]"
+        )
+    return output
+
+
+def _truncate_line(line: str, max_line_length: int) -> str:
+    if len(line) <= max_line_length:
+        return line
+    return line[:max_line_length] + "... [truncated]"

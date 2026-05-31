@@ -299,3 +299,214 @@ async def test_grep_line_numbers_are_one_based(tmp_path) -> None:
     assert ":3:NEEDLE" in result
     # And it must NOT be reported on a 0-based or off-by-one ":2:".
     assert ":2:NEEDLE" not in result
+
+
+# ---------------------------------------------------------------------------
+# Bounded-output behaviors (bead obsidian-1yh)
+#
+# The unbounded grep crashed the agent: a repo-root search walked a 221MB
+# .venv and returned ~2.16M tokens. These tests pin the four robustness levers
+# from the bead's FIX section:
+#   1. default-ignore directories (.venv, .git, node_modules, __pycache__,
+#      dist, build) + a configurable, MERGED custom ignore set
+#   2. per-line length cap with a truncation marker
+#   3. total-output cap (max matches) with a suppression notice
+#   4. robust binary detection via NUL-byte sniff (not just UnicodeDecodeError)
+# ---------------------------------------------------------------------------
+
+# Suppression-notice indicator vocabulary: signals that the TOTAL number of
+# matches was capped and the remainder omitted. Deliberately excludes
+# "truncat" — that token belongs to the per-line truncation signal, a
+# distinct concept (see _PER_LINE_TRUNC_TOKENS).
+_SUPPRESSION_TOKENS = ("suppress", "omit", "more match", "limit")
+
+# Per-line truncation indicator vocabulary: signals that a single overlong
+# line was shortened.
+_PER_LINE_TRUNC_TOKENS = ("truncat", "…", "...", "[")
+
+
+@pytest.mark.asyncio
+async def test_grep_default_ignores_venv(tmp_path) -> None:
+    """A directory walk must prune the built-in default ignore dirs (.venv)."""
+    from sr2_spectre.tools.builtins.grep import GrepTool
+
+    venv_dir = tmp_path / ".venv" / "lib"
+    venv_dir.mkdir(parents=True)
+    (venv_dir / "pkg.txt").write_text("hidden needle\n", encoding="utf-8")
+
+    keep = tmp_path / "keep.txt"
+    keep.write_text("visible needle\n", encoding="utf-8")
+
+    tool = GrepTool()
+    result = await tool(pattern="needle", path=str(tmp_path), regex=False)
+
+    assert isinstance(result, str)
+    # The file outside .venv is found.
+    assert "keep.txt" in result
+    # The file inside .venv is pruned by the default ignore set.
+    assert "pkg.txt" not in result
+
+
+@pytest.mark.asyncio
+async def test_grep_default_ignores_common_dirs(tmp_path) -> None:
+    """Each canonical default ignore dir is pruned during a recursive walk."""
+    from sr2_spectre.tools.builtins.grep import GrepTool
+
+    default_dirs = [
+        ".venv",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        "dist",
+        "build",
+    ]
+    for name in default_dirs:
+        d = tmp_path / name
+        d.mkdir(parents=True)
+        (d / "f.txt").write_text("needle inside\n", encoding="utf-8")
+
+    keep = tmp_path / "keep.txt"
+    keep.write_text("needle outside\n", encoding="utf-8")
+
+    tool = GrepTool()
+    result = await tool(pattern="needle", path=str(tmp_path), regex=False)
+
+    assert isinstance(result, str)
+    assert "keep.txt" in result
+    # None of the default-ignored directories should contribute a match.
+    for name in default_dirs:
+        assert name not in result
+
+
+@pytest.mark.asyncio
+async def test_grep_custom_ignore_dirs_merge_with_defaults(tmp_path) -> None:
+    """A custom ignore_dirs is MERGED with defaults, never replaces them.
+
+    Resolved spec decision: passing a custom set ADDS to the built-in
+    defaults. There is no escape hatch to disable defaults, so a default-
+    ignored directory (.venv) must STILL be pruned even when a custom set
+    is supplied.
+    """
+    from sr2_spectre.tools.builtins.grep import GrepTool
+
+    venv_dir = tmp_path / ".venv"
+    venv_dir.mkdir()
+    (venv_dir / "in_venv.txt").write_text("needle\n", encoding="utf-8")
+
+    custom_dir = tmp_path / "custom_skip"
+    custom_dir.mkdir()
+    (custom_dir / "in_custom.txt").write_text("needle\n", encoding="utf-8")
+
+    keep = tmp_path / "keep.txt"
+    keep.write_text("needle\n", encoding="utf-8")
+
+    tool = GrepTool()
+    result = await tool(
+        pattern="needle",
+        path=str(tmp_path),
+        regex=False,
+        ignore_dirs={"custom_skip"},
+    )
+
+    assert isinstance(result, str)
+    # 1. Ordinary file outside any ignored dir IS found.
+    assert "keep.txt" in result
+    # 2. Custom-ignored dir IS pruned.
+    assert "in_custom.txt" not in result
+    # 3. Default-ignored dir is STILL pruned despite a custom set being passed
+    #    (merge semantics, not replace).
+    assert "in_venv.txt" not in result
+
+
+@pytest.mark.asyncio
+async def test_grep_caps_per_line_length_with_truncation_marker(tmp_path) -> None:
+    """An overlong matching line is truncated and marked, not dumped whole."""
+    from sr2_spectre.tools.builtins.grep import GrepTool
+
+    target = tmp_path / "long.txt"
+    # One match on a single, very long line (simulates minified/vendored data).
+    long_line = "needle" + ("x" * 10_000)
+    target.write_text(long_line + "\n", encoding="utf-8")
+
+    tool = GrepTool()
+    result = await tool(pattern="needle", path=str(target), regex=False)
+
+    assert isinstance(result, str)
+    # The match is reported.
+    assert "needle" in result
+    # The full 10k-char line must NOT be emitted verbatim.
+    assert len(result) < 1000
+    # A truncation marker of some kind is present.
+    assert any(tok in result for tok in _PER_LINE_TRUNC_TOKENS)
+
+
+@pytest.mark.asyncio
+async def test_grep_caps_total_matches_with_suppression_notice(tmp_path) -> None:
+    """When matches exceed the total cap, output is bounded + a notice appears."""
+    from sr2_spectre.tools.builtins.grep import GrepTool
+
+    target = tmp_path / "many.txt"
+    # Far more matches than any reasonable cap; lines are short so this
+    # exercises the TOTAL-match cap, not the per-line cap.
+    lines = "\n".join(f"needle {i}" for i in range(5_000))
+    target.write_text(lines + "\n", encoding="utf-8")
+
+    tool = GrepTool()
+    result = await tool(pattern="needle", path=str(target), regex=False)
+
+    assert isinstance(result, str)
+    # Output is bounded: not all 5000 matches are present.
+    assert result.count("needle") <= 100
+    # A suppression notice signals that matches were omitted. Uses the
+    # suppression vocabulary only (no per-line "truncat" token here).
+    lowered = result.lower()
+    assert any(tok in lowered for tok in _SUPPRESSION_TOKENS)
+
+
+@pytest.mark.asyncio
+async def test_grep_under_cap_emits_all_without_notice(tmp_path) -> None:
+    """When matches are under the cap, all appear and NO suppression notice."""
+    from sr2_spectre.tools.builtins.grep import GrepTool
+
+    target = tmp_path / "few.txt"
+    target.write_text(
+        "needle one\nneedle two\nneedle three\n", encoding="utf-8"
+    )
+
+    tool = GrepTool()
+    result = await tool(pattern="needle", path=str(target), regex=False)
+
+    assert isinstance(result, str)
+    # All three matches present.
+    assert result.count("needle") == 3
+    # No suppression notice when nothing was suppressed.
+    lowered = result.lower()
+    assert not any(tok in lowered for tok in _SUPPRESSION_TOKENS)
+
+
+@pytest.mark.asyncio
+async def test_grep_nul_byte_file_skipped(tmp_path) -> None:
+    """A file with a NUL byte is treated as binary and skipped (NUL sniff).
+
+    The original code only skipped on UnicodeDecodeError; a UTF-8-decodable
+    file containing a NUL byte slipped through and got dumped. Robust binary
+    detection must skip it.
+    """
+    from sr2_spectre.tools.builtins.grep import GrepTool
+
+    # Contains a NUL byte but is otherwise valid UTF-8 (decodes cleanly), so
+    # only a NUL-byte sniff — not UnicodeDecodeError — catches it.
+    nul_file = tmp_path / "data.bin"
+    nul_file.write_bytes(b"needle\x00more needle here\n")
+
+    text_file = tmp_path / "text.txt"
+    text_file.write_text("needle in text\n", encoding="utf-8")
+
+    tool = GrepTool()
+    result = await tool(pattern="needle", path=str(tmp_path), regex=False)
+
+    assert isinstance(result, str)
+    # The real text file is searched.
+    assert "text.txt" in result
+    # The NUL-containing binary is skipped, contributing no matches.
+    assert "data.bin" not in result
