@@ -197,6 +197,11 @@ class Agent:
         """Register a tool at runtime (not from config)."""
         self.registry.register(name, description, input_schema, fn)
 
+    async def aclose(self) -> None:
+        """Close all MCP client transports. Safe to call even if initialize() was never called."""
+        for client in self._mcp_clients:
+            await client.close()
+
     def new_session(self, session_id: str | None = None) -> None:
         """Reset conversation history and start a new session."""
         self.session_id = session_id or f"{self.config.agent.name}-default"

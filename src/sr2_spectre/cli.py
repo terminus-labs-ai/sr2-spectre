@@ -235,11 +235,14 @@ async def run_async(argv: list[str] | None = None) -> None:
 
     await agent.initialize()
 
-    plugin = _load_plugin(args.plugin, **plugin_kwargs)
+    try:
+        plugin = _load_plugin(args.plugin, **plugin_kwargs)
 
-    await plugin.start(agent)
-    await plugin.run(agent)
-    await plugin.stop()
+        await plugin.start(agent)
+        await plugin.run(agent)
+        await plugin.stop()
+    finally:
+        await agent.aclose()
 
     if tracer is not None:
         print(render_trace(tracer.get_trace()))

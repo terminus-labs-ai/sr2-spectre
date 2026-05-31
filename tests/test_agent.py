@@ -502,3 +502,48 @@ class TestRegisterTool:
             agent = Agent(config=_make_config())
         agent.register_tool("ping", "Ping", {}, lambda: "pong")
         assert "ping" in agent.registry
+
+
+# ---------------------------------------------------------------------------
+# J. aclose() — MCP client cleanup
+# ---------------------------------------------------------------------------
+
+class TestAgentAClose:
+    @pytest.mark.asyncio
+    async def test_aclose_calls_close_on_each_mcp_client(self):
+        """aclose() must call close() on every MCP client it created."""
+        from sr2_spectre.agent import Agent
+        from sr2_spectre.config import McpServerConfig
+
+        cfg = _make_config(mcp_servers=[
+            McpServerConfig(name="a", type="stdio", command=["server_a"]),
+            McpServerConfig(name="b", type="stdio", command=["server_b"]),
+        ])
+
+        with patch("sr2_spectre.agent.SR2") as MockSR2:
+            MockSR2.return_value = MagicMock()
+
+            mock_client_a = AsyncMock()
+            mock_client_b = AsyncMock()
+
+            with patch(
+                "sr2_spectre.agent.MCPClient",
+                side_effect=[mock_client_a, mock_client_b],
+            ):
+                agent = Agent(config=cfg)
+
+        await agent.aclose()
+
+        mock_client_a.close.assert_awaited_once()
+        mock_client_b.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_aclose_noop_when_no_mcp_servers(self):
+        """aclose() is a no-op when the agent has no MCP servers configured."""
+        from sr2_spectre.agent import Agent
+
+        with patch("sr2_spectre.agent.SR2") as MockSR2:
+            MockSR2.return_value = MagicMock()
+            agent = Agent(config=_make_config())
+
+        await agent.aclose()  # must not raise
