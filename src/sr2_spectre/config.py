@@ -83,7 +83,7 @@ class AgentConfig(BaseModel):
     """
     name: str = "spectre"
     tools: list[ToolConfig] = Field(default_factory=list)
-    max_tool_rounds: int = 10
+    max_tool_rounds: int = 40
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
 
 

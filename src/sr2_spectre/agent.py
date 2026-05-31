@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
 if TYPE_CHECKING:
     from sr2.pipeline.tracing import Tracer
 
+from sr2.config.models import ToolLoopLimitError
 from sr2.integrations.litellm import LiteLLMCallable
 from sr2.models import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from sr2.orchestrator import SR2
@@ -86,6 +87,10 @@ class Agent:
             base_url=model_cfg.base_url,
         )
 
+        # agent.max_tool_rounds is the authoritative tool-loop limit: it wins
+        # over whatever the pipeline config originally carried.
+        config.pipeline.max_tool_iterations = config.agent.max_tool_rounds
+
         # SR2 owns context compilation, tool definition injection, and LLM calls
         # Spectre provides the tool_executor callback so SR2 can execute tools
         self.sr2 = SR2(
@@ -144,23 +149,30 @@ class Agent:
         text_acc: list[str] = []
         total_tool_calls = 0
 
-        async for ev in self.sr2.turn(user_input=increment):
-            if ev.type == "text" and ev.text:
-                text_acc.append(ev.text)
-                yield AgentTextDelta(text=ev.text)
-            elif ev.type == "tool_use_emitted" and ev.tool_uses:
-                for tu in ev.tool_uses:
-                    total_tool_calls += 1
-                    yield AgentToolStart(tool_id=tu.id, name=tu.name, input=tu.input)
-            elif ev.type == "tool_result_received" and ev.tool_results:
-                for tr in ev.tool_results:
-                    yield AgentToolResult(
-                        tool_id=tr.tool_use_id,
-                        name="",  # SR2 doesn't carry name on result; that's OK for TUI
-                        content=tr.content,
-                        is_error=getattr(tr, "is_error", False),
-                    )
-            # Suppress iteration_complete, usage, end events from leaking to TUI
+        try:
+            async for ev in self.sr2.turn(user_input=increment):
+                if ev.type == "text" and ev.text:
+                    text_acc.append(ev.text)
+                    yield AgentTextDelta(text=ev.text)
+                elif ev.type == "tool_use_emitted" and ev.tool_uses:
+                    for tu in ev.tool_uses:
+                        total_tool_calls += 1
+                        yield AgentToolStart(tool_id=tu.id, name=tu.name, input=tu.input)
+                elif ev.type == "tool_result_received" and ev.tool_results:
+                    for tr in ev.tool_results:
+                        yield AgentToolResult(
+                            tool_id=tr.tool_use_id,
+                            name="",  # SR2 doesn't carry name on result; that's OK for TUI
+                            content=tr.content,
+                            is_error=getattr(tr, "is_error", False),
+                        )
+                # Suppress iteration_complete, usage, end events from leaking to TUI
+        except ToolLoopLimitError:
+            # SR2 hit the tool-loop iteration limit. Stop consuming, surface a
+            # short notice, and fall through to the normal AgentDone emission.
+            notice = "Tool iteration limit reached; stopping."
+            text_acc.append(notice)
+            yield AgentTextDelta(text=notice)
 
         last_text = "".join(text_acc)
         assistant_content = [TextBlock(text=last_text)] if last_text else []

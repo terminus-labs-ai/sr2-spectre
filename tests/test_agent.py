@@ -505,6 +505,66 @@ class TestRegisterTool:
 
 
 # ---------------------------------------------------------------------------
+# K. max_tool_rounds is authoritative over pipeline.max_tool_iterations (obsidian-ydt, Behavior 1)
+#
+# When an Agent is constructed, the SR2 instance must be built so SR2's
+# effective tool-loop limit equals config.agent.max_tool_rounds. Concretely:
+# the pipeline_config passed to SR2(...) must have
+# max_tool_iterations == config.agent.max_tool_rounds, overriding whatever the
+# pipeline config originally carried.
+# ---------------------------------------------------------------------------
+
+def _config_with_iterations(max_tool_rounds: int, pipeline_iterations: int) -> SpectreConfig:
+    """Build a config whose agent.max_tool_rounds and pipeline.max_tool_iterations differ."""
+    pipeline = _minimal_pipeline_dict()
+    pipeline["max_tool_iterations"] = pipeline_iterations
+    return SpectreConfig(
+        agent=AgentConfig(name="test", max_tool_rounds=max_tool_rounds),
+        models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
+        pipeline=pipeline,
+    )
+
+
+class TestMaxToolRoundsAuthoritative:
+    def test_pipeline_config_max_tool_iterations_matches_max_tool_rounds(self):
+        """SR2 must be constructed with pipeline_config.max_tool_iterations == agent.max_tool_rounds."""
+        from sr2_spectre.agent import Agent
+
+        # max_tool_rounds=7 is distinctive; pipeline default-style value is 25.
+        cfg = _config_with_iterations(max_tool_rounds=7, pipeline_iterations=25)
+
+        with patch("sr2_spectre.agent.SR2") as MockSR2:
+            MockSR2.return_value = MagicMock()
+            Agent(config=cfg, session_id="s1")
+
+        MockSR2.assert_called_once()
+        # pipeline_config may be passed positionally or by keyword; check both.
+        call = MockSR2.call_args
+        pipeline_config = call.kwargs.get("pipeline_config")
+        if pipeline_config is None and call.args:
+            pipeline_config = call.args[0]
+        assert pipeline_config is not None, "SR2 was not given a pipeline_config"
+        assert pipeline_config.max_tool_iterations == 7
+
+    def test_different_max_tool_rounds_propagates(self):
+        """A different max_tool_rounds value propagates too — value is not hard-coded."""
+        from sr2_spectre.agent import Agent
+
+        cfg = _config_with_iterations(max_tool_rounds=3, pipeline_iterations=25)
+
+        with patch("sr2_spectre.agent.SR2") as MockSR2:
+            MockSR2.return_value = MagicMock()
+            Agent(config=cfg, session_id="s1")
+
+        call = MockSR2.call_args
+        pipeline_config = call.kwargs.get("pipeline_config")
+        if pipeline_config is None and call.args:
+            pipeline_config = call.args[0]
+        assert pipeline_config is not None, "SR2 was not given a pipeline_config"
+        assert pipeline_config.max_tool_iterations == 3
+
+
+# ---------------------------------------------------------------------------
 # J. aclose() — MCP client cleanup
 # ---------------------------------------------------------------------------
 

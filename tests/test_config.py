@@ -38,7 +38,7 @@ class TestAgentConfig:
         cfg = AgentConfig()
         assert cfg.name == "spectre"
         assert cfg.tools == []
-        assert cfg.max_tool_rounds == 10
+        assert cfg.max_tool_rounds == 40
 
     def test_max_tool_rounds_custom(self):
         cfg = AgentConfig(max_tool_rounds=5)

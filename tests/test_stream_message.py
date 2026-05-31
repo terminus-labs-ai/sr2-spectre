@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from sr2.config.models import ToolLoopLimitError
 from sr2.models import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from sr2.protocols.llm import StreamEvent
 from sr2_spectre.agent import Agent
@@ -590,6 +591,78 @@ class TestStreamMessageMaxToolRounds:
         done = events[-1]
         assert isinstance(done, AgentDone)
         assert done.tool_calls_executed == 2
+
+
+# ---------------------------------------------------------------------------
+# F2. ToolLoopLimitError raised mid-stream -> graceful stop (obsidian-ydt, Behavior 2)
+#
+# When self.sr2.turn(...) raises ToolLoopLimitError partway through streaming,
+# stream_message must catch it and end gracefully: emit the text/tool events
+# seen before the raise, emit a final notice (an AgentTextDelta whose text
+# indicates the tool/iteration limit was reached), and ALWAYS still emit
+# AgentDone as the final event. No exception may escape stream_message.
+# ---------------------------------------------------------------------------
+
+def _mock_sr2_raising_loop_limit() -> MagicMock:
+    """Mock SR2 whose turn() yields a tool round, then raises ToolLoopLimitError."""
+    mock_sr2 = MagicMock()
+    mock_sr2.seed_session = MagicMock()
+
+    async def _turn(user_input):
+        yield StreamEvent(
+            type="tool_use_emitted",
+            tool_uses=[ToolUseBlock(id="tu1", name="loop", input={})],
+        )
+        yield StreamEvent(
+            type="tool_result_received",
+            tool_results=[ToolResultBlock(tool_use_id="tu1", content="still going")],
+        )
+        raise ToolLoopLimitError("tool loop iteration limit reached")
+
+    mock_sr2.turn = _turn
+    return mock_sr2
+
+
+class TestStreamMessageToolLoopLimitError:
+    @pytest.mark.asyncio
+    async def test_no_exception_escapes_and_done_is_last(self):
+        """ToolLoopLimitError must be caught; AgentDone is still the final event."""
+        agent = _make_agent(_mock_sr2_raising_loop_limit())
+
+        events = await _collect(agent.stream_message("go"))
+
+        assert isinstance(events[-1], AgentDone)
+
+    @pytest.mark.asyncio
+    async def test_tool_calls_before_raise_are_reflected(self):
+        """tool_calls_executed reflects the tool calls emitted before the raise (>=1)."""
+        agent = _make_agent(_mock_sr2_raising_loop_limit())
+
+        events = await _collect(agent.stream_message("go"))
+
+        done = events[-1]
+        assert isinstance(done, AgentDone)
+        assert done.tool_calls_executed >= 1
+
+        # The tool events seen before the raise are still surfaced.
+        starts = [e for e in events if isinstance(e, AgentToolStart)]
+        results = [e for e in events if isinstance(e, AgentToolResult)]
+        assert len(starts) >= 1
+        assert len(results) >= 1
+
+    @pytest.mark.asyncio
+    async def test_final_notice_text_delta_emitted(self):
+        """At least one AgentTextDelta carries a limit/iteration notice (not exact wording)."""
+        agent = _make_agent(_mock_sr2_raising_loop_limit())
+
+        events = await _collect(agent.stream_message("go"))
+
+        delta_texts = [e.text.lower() for e in events if isinstance(e, AgentTextDelta)]
+        # NOTE: wording is intentionally not pinned; accept any of these tokens.
+        assert any(
+            ("limit" in t) or ("iteration" in t) or ("stopped" in t)
+            for t in delta_texts
+        ), f"No limit/iteration notice found in text deltas: {delta_texts}"
 
 
 # ---------------------------------------------------------------------------
