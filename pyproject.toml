@@ -23,6 +23,9 @@ sr2-spectre = "sr2_spectre.cli:main"
 [project.entry-points."sr2.tool_providers"]
 spectre_tools = "sr2_spectre.providers:SpectreToolProvider"
 
+[project.entry-points."sr2.resolvers"]
+plan = "sr2_spectre.planning.resolver:PlanResolver"
+
 [build-system]
 requires = ["uv_build>=0.11.0,<0.12.0"]
 build-backend = "uv_build"
