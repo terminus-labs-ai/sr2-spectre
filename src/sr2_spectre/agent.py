@@ -2,17 +2,19 @@
 
 Owns:
 - Session identity and authoritative conversation history (list[Message])
-- Tool registry (execution side)
+- Tool registry (execution side — provides tool_executor callback to SR2)
 - SR2 instance (context compilation, LLM call, token budgets)
 
 SR2 is invoked as a stateless context compiler + streamer.
-Spectre drives the tool execution loop and owns all conversation state.
+SR2 drives the tool execution loop internally via the tool_executor callback;
+spectre owns all conversation state and history.
 
-Design: spectre owns history; SR2 is stateless per-round.
-Each round: seed prior history → turn(increment) → reconstruct assistant turn
-→ execute tools → loop until no tool calls or SR2's max_tool_iterations
-exceeded. The tool-loop limit is owned and enforced by SR2 (pipeline.
-max_tool_iterations); spectre catches SR2's ToolLoopLimitError and stops.
+Design: spectre owns history; SR2 owns the tool loop.
+Each round: seed prior history → turn(increment) → SR2 loops internally
+→ SR2 yields stream events (text, tool_use_emitted, tool_result_received)
+→ spectre translates to AgentEvents → Interface renders.
+The tool-loop limit is owned and enforced by SR2 (pipeline.max_tool_iterations);
+spectre catches SR2's ToolLoopLimitError and stops.
 """
 
 from __future__ import annotations
@@ -42,6 +44,40 @@ from sr2_spectre.tools.registry import ToolRegistry
 
 # Type alias for SR2's tool_executor callback
 ToolExecutor = Callable[[ToolUseBlock], Awaitable[ToolResultBlock]]
+
+# ---------------------------------------------------------------------------
+# complete_step event emission
+# ---------------------------------------------------------------------------
+
+import json as _json
+
+from sr2.pipeline.events import Event, EventPhase
+
+
+def _is_complete_step_success(result_block: ToolResultBlock) -> dict[str, Any] | None:
+    """Check if a tool result is a successful complete_step output.
+
+    Returns the parsed event data dict on success, or None.
+    """
+    content = result_block.content
+    if isinstance(content, list):
+        # Multi-block result — concatenate texts
+        texts = [b.text for b in content if hasattr(b, "text")]
+        content = " ".join(texts)
+    if not isinstance(content, str):
+        return None
+    try:
+        data = _json.loads(content)
+    except (_json.JSONDecodeError, ValueError):
+        return None
+    if data.get("success") is True:
+        return {
+            "frame": data.get("frame", ""),
+            "plan": data.get("plan", ""),
+            "task": data.get("task", ""),
+            "order": data.get("order", 0),
+        }
+    return None
 
 logger = logging.getLogger(__name__)
 
@@ -106,10 +142,30 @@ class Agent:
         )
 
     async def _execute_tool(self, block: ToolUseBlock) -> ToolResultBlock:
-        """SR2 tool_executor callback. Executes a tool via the registry."""
+        """SR2 tool_executor callback. Executes a tool via the registry.
+
+        Special-cases ``complete_step``: on success, emits a
+        ``plan_step_completed`` event on the SR2 bus so the
+        StepCompactionTransformer can fire.
+        """
         try:
             out = await self.registry.execute(block.name, block.input)
-            return ToolResultBlock(tool_use_id=block.id, content=str(out))
+            result = ToolResultBlock(tool_use_id=block.id, content=str(out))
+
+            # Emit plan_step_completed event on successful complete_step
+            if block.name == "complete_step":
+                event_data = _is_complete_step_success(result)
+                if event_data is not None:
+                    self.sr2.bus.queue(
+                        Event(
+                            name="plan_step_completed",
+                            phase=EventPhase.COMPLETED,
+                            source_layer="plan",
+                            data=event_data,
+                        )
+                    )
+
+            return result
         except Exception as exc:
             logger.warning("Tool %r failed: %s", block.name, exc)
             return ToolResultBlock(tool_use_id=block.id, content=f"ERROR: {exc}", is_error=True)
