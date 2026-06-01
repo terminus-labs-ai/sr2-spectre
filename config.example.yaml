@@ -6,7 +6,6 @@
 # Agent-level settings
 agent:
   name: my-agent
-  max_tool_rounds: 10   # max LLM → tool → LLM cycles per turn
 
   # Built-in tools to register. Each tool is a Python class loaded by class_path.
   # Remove tools you don't want, or add custom ones.
@@ -40,6 +39,7 @@ models:
 # SR2 pipeline — context compilation, token budgets, layers
 pipeline:
   token_budget: 200000
+  max_tool_iterations: 40   # max LLM → tool → LLM cycles per turn (SR2 enforces this)
 
   layers:
     # System prompt layer

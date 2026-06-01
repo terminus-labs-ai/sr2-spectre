@@ -235,7 +235,7 @@ class TestLoadMergedConfig:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        tier1 = {"agent": {"name": "base", "max_tool_rounds": 10}}
+        tier1 = {"agent": {"name": "base", "tools": [{"name": "terminal", "class_path": "x.Y"}]}}
         tier3 = {"agent": {"name": "project"}}
 
         _write_yaml(sr2_home / "config.yaml", tier1)
@@ -243,4 +243,4 @@ class TestLoadMergedConfig:
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
         assert result["agent"]["name"] == "project"
-        assert result["agent"]["max_tool_rounds"] == 10
+        assert result["agent"]["tools"] == [{"name": "terminal", "class_path": "x.Y"}]

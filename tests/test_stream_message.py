@@ -6,7 +6,7 @@ Covers:
   C. Tool call sequence: AgentToolStart → AgentToolResult → ... → AgentDone
   D. tool_calls_executed counter in AgentDone is correct
   E. Tool errors yield AgentToolResult(is_error=True) — not raised
-  F. max_tool_rounds exceeded: AgentDone still emitted
+  F. tool-loop limit exceeded: AgentDone still emitted
   G. History is updated the same as handle_user_message()
   H. handle_user_message() still works (re-implemented on top of stream_message())
   I. Multi-round: text + tool + text emitted in correct order
@@ -516,7 +516,7 @@ class TestStreamMessageToolErrors:
 
 
 # ---------------------------------------------------------------------------
-# F. max_tool_rounds exceeded
+# F. tool-loop limit exceeded
 # ---------------------------------------------------------------------------
 
 class TestStreamMessageMaxToolRounds:
@@ -554,7 +554,7 @@ class TestStreamMessageMaxToolRounds:
             StreamEvent(type="text", text="stopped"),
             StreamEvent(type="end"),
         ])
-        agent = _make_agent(mock_sr2, max_tool_rounds=3)
+        agent = _make_agent(mock_sr2)
 
         events = await _collect(agent.stream_message("start"))
         assert isinstance(events[-1], AgentDone)
@@ -584,7 +584,7 @@ class TestStreamMessageMaxToolRounds:
             StreamEvent(type="text", text="done"),
             StreamEvent(type="end"),
         ])
-        agent = _make_agent(mock_sr2, max_tool_rounds=2)
+        agent = _make_agent(mock_sr2)
 
         events = await _collect(agent.stream_message("start"))
 

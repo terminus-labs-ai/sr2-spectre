@@ -10,7 +10,9 @@ Spectre drives the tool execution loop and owns all conversation state.
 
 Design: spectre owns history; SR2 is stateless per-round.
 Each round: seed prior history → turn(increment) → reconstruct assistant turn
-→ execute tools → loop until no tool calls or max_tool_rounds exceeded.
+→ execute tools → loop until no tool calls or SR2's max_tool_iterations
+exceeded. The tool-loop limit is owned and enforced by SR2 (pipeline.
+max_tool_iterations); spectre catches SR2's ToolLoopLimitError and stops.
 """
 
 from __future__ import annotations
@@ -87,9 +89,9 @@ class Agent:
             base_url=model_cfg.base_url,
         )
 
-        # agent.max_tool_rounds is the authoritative tool-loop limit: it wins
-        # over whatever the pipeline config originally carried.
-        config.pipeline.max_tool_iterations = config.agent.max_tool_rounds
+        # The tool-loop limit lives entirely in SR2 (pipeline.max_tool_iterations).
+        # Spectre does not mirror or override it — the configured pipeline value is
+        # the single source of truth and flows straight through to SR2 below.
 
         # SR2 owns context compilation, tool definition injection, and LLM calls
         # Spectre provides the tool_executor callback so SR2 can execute tools

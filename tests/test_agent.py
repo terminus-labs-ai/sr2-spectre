@@ -7,7 +7,7 @@ Covers:
   D. handle_user_message: happy path (no tools)
   E. handle_user_message: one tool round-trip
   F. handle_user_message: error recovery (FR13 — tool error fed back, loop continues)
-  G. handle_user_message: max_tool_rounds exceeded returns text + warning (FR14)
+  G. handle_user_message: tool-loop limit exceeded returns text + warning (FR14)
   H. new_session() resets history
   I. register_tool() adds to registry
 """
@@ -377,7 +377,7 @@ class TestToolErrorRecovery:
 
 
 # ---------------------------------------------------------------------------
-# G. max_tool_rounds exceeded — FR14
+# G. tool-loop limit exceeded — FR14
 # ---------------------------------------------------------------------------
 
 class TestMaxToolRounds:
@@ -505,33 +505,34 @@ class TestRegisterTool:
 
 
 # ---------------------------------------------------------------------------
-# K. max_tool_rounds is authoritative over pipeline.max_tool_iterations (obsidian-ydt, Behavior 1)
+# K. pipeline.max_tool_iterations is the single source of truth for the
+#    tool-loop limit (reverses obsidian-ydt Behavior 1).
 #
-# When an Agent is constructed, the SR2 instance must be built so SR2's
-# effective tool-loop limit equals config.agent.max_tool_rounds. Concretely:
-# the pipeline_config passed to SR2(...) must have
-# max_tool_iterations == config.agent.max_tool_rounds, overriding whatever the
-# pipeline config originally carried.
+# SR2 owns and enforces the tool-loop limit. Spectre must pass the configured
+# pipeline.max_tool_iterations through to SR2 UNCHANGED — there is no
+# spectre-side knob (agent.max_tool_rounds is gone) that overrides it.
+# Regression guard for the inverse bug: configuring pipeline.max_tool_iterations
+# (e.g. 1000) must be the value SR2 is actually built with.
 # ---------------------------------------------------------------------------
 
-def _config_with_iterations(max_tool_rounds: int, pipeline_iterations: int) -> SpectreConfig:
-    """Build a config whose agent.max_tool_rounds and pipeline.max_tool_iterations differ."""
+def _config_with_iterations(pipeline_iterations: int) -> SpectreConfig:
+    """Build a config whose pipeline.max_tool_iterations is set to a known value."""
     pipeline = _minimal_pipeline_dict()
     pipeline["max_tool_iterations"] = pipeline_iterations
     return SpectreConfig(
-        agent=AgentConfig(name="test", max_tool_rounds=max_tool_rounds),
+        agent=AgentConfig(name="test"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline=pipeline,
     )
 
 
-class TestMaxToolRoundsAuthoritative:
-    def test_pipeline_config_max_tool_iterations_matches_max_tool_rounds(self):
-        """SR2 must be constructed with pipeline_config.max_tool_iterations == agent.max_tool_rounds."""
+class TestMaxToolIterationsSingleSource:
+    def test_pipeline_max_tool_iterations_flows_through_unchanged(self):
+        """SR2 must be constructed with exactly the configured pipeline.max_tool_iterations."""
         from sr2_spectre.agent import Agent
 
-        # max_tool_rounds=7 is distinctive; pipeline default-style value is 25.
-        cfg = _config_with_iterations(max_tool_rounds=7, pipeline_iterations=25)
+        # 1000 mirrors the real bug: user set it, the loop must honor it.
+        cfg = _config_with_iterations(pipeline_iterations=1000)
 
         with patch("sr2_spectre.agent.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
@@ -544,13 +545,13 @@ class TestMaxToolRoundsAuthoritative:
         if pipeline_config is None and call.args:
             pipeline_config = call.args[0]
         assert pipeline_config is not None, "SR2 was not given a pipeline_config"
-        assert pipeline_config.max_tool_iterations == 7
+        assert pipeline_config.max_tool_iterations == 1000
 
-    def test_different_max_tool_rounds_propagates(self):
-        """A different max_tool_rounds value propagates too — value is not hard-coded."""
+    def test_different_iteration_value_propagates(self):
+        """A different configured value propagates too — value is not hard-coded."""
         from sr2_spectre.agent import Agent
 
-        cfg = _config_with_iterations(max_tool_rounds=3, pipeline_iterations=25)
+        cfg = _config_with_iterations(pipeline_iterations=7)
 
         with patch("sr2_spectre.agent.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
@@ -561,7 +562,7 @@ class TestMaxToolRoundsAuthoritative:
         if pipeline_config is None and call.args:
             pipeline_config = call.args[0]
         assert pipeline_config is not None, "SR2 was not given a pipeline_config"
-        assert pipeline_config.max_tool_iterations == 3
+        assert pipeline_config.max_tool_iterations == 7
 
 
 # ---------------------------------------------------------------------------

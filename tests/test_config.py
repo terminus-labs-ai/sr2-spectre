@@ -38,11 +38,6 @@ class TestAgentConfig:
         cfg = AgentConfig()
         assert cfg.name == "spectre"
         assert cfg.tools == []
-        assert cfg.max_tool_rounds == 40
-
-    def test_max_tool_rounds_custom(self):
-        cfg = AgentConfig(max_tool_rounds=5)
-        assert cfg.max_tool_rounds == 5
 
     def test_no_model_field(self):
         """AgentConfig must NOT have model/base_url/system_prompt."""
@@ -142,7 +137,6 @@ class TestLoadConfig:
         config_file.write_text(
             "agent:\n"
             "  name: my-agent\n"
-            "  max_tool_rounds: 5\n"
             "\n"
             "models:\n"
             "  default:\n"
@@ -171,7 +165,6 @@ class TestLoadConfig:
         )
         cfg = load_config(str(config_file))
         assert cfg.agent.name == "my-agent"
-        assert cfg.agent.max_tool_rounds == 5
         assert cfg.models["default"].model == "openai/qwen3:27b"
         assert cfg.models["default"].base_url == "http://localhost:11438/v1"
         assert cfg.pipeline.token_budget == 100000

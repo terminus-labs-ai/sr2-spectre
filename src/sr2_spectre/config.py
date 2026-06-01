@@ -1,7 +1,7 @@
 """Spectre configuration models.
 
 SpectreConfig is a superset of SR2's PipelineConfig:
-  - agent:    spectre-owned concerns (name, tools, max_tool_rounds)
+  - agent:    spectre-owned concerns (name, tools, mcp_servers)
   - models:   dict[str, ModelConfig] — LLM endpoints
   - pipeline: SR2's native PipelineConfig — passed directly to SR2()
   - plugins:  list of plugin descriptors (unchanged)
@@ -83,7 +83,6 @@ class AgentConfig(BaseModel):
     """
     name: str = "spectre"
     tools: list[ToolConfig] = Field(default_factory=list)
-    max_tool_rounds: int = 40
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
 
 

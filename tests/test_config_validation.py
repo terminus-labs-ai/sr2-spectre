@@ -65,7 +65,7 @@ class TestValidateConfigValid:
 
     def test_config_with_agent_no_name_field_is_valid(self):
         """Agent section without a 'name' field is valid (name is optional)."""
-        config = {"agent": {"max_tool_rounds": 5}}
+        config = {"agent": {"tools": []}}
         errors = validate_config(config)
         assert errors == []
 
