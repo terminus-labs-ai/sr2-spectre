@@ -260,7 +260,7 @@ class TestDryRunAgreesWithStartup:
     def test_both_paths_use_same_validation_mechanism(self):
         """Both paths construct SpectreConfig(**dict) — same pydantic validation.
 
-        The dry-run path (_run_config_show) and the startup path (cli.load_resolved_config)
+        The dry-run path (_run_config_show) and the startup path (cli.resolve_config)
         both call SpectreConfig(**merged_config). There is only one validation source.
         """
         config = {

@@ -4,6 +4,13 @@ SpectreConfig is a superset of SR2's PipelineConfig:
   - agent:    spectre-owned concerns (name, tools, mcp_servers)
   - models:   dict[str, ModelConfig] — LLM endpoints
   - pipeline: SR2's native PipelineConfig — passed directly to SR2()
+
+Public API (loaders):
+  - load_resolved_config()        — 4-tier merge → dict (used by cli.resolve_config)
+  - load_resolved_config_with_provenance() — 4-tier merge → (dict, provenance) (used by config show)
+  - load_config_with_provenance() — tiers 1-3 merge → (dict, provenance) (used by config show)
+  - load_merged_config()          — tiers 1-3 merge → dict (test-only; kept for tier-merge tests)
+  - load_config()                 — single file → SpectreConfig (test-only; kept for mcp wiring tests)
 """
 
 from __future__ import annotations
@@ -494,38 +501,6 @@ def _resolve_tiers_with_provenance(
         )
 
     return result, result_provenance
-
-
-def load_lower_tiers(
-    cwd: Path | None = None,
-    env: dict[str, str] | None = None,
-) -> dict:
-    """Resolve and merge tiers 1-3 only (no positional file).
-
-    Tier order (lowest to highest):
-    1. $SR2_HOME/config.yaml
-    2. $SR2_HOME/spectre.yaml
-    3. <cwd>/.spectre.yaml
-
-    Missing files are silently skipped. Returns the merged dict (may be empty).
-    Used by the CLI to overlay the positional file (tier 4) on top while keeping
-    the positional file's own load behind the patchable load_config seam.
-    """
-    if cwd is None:
-        cwd = Path.cwd()
-    if env is None:
-        env = dict(os.environ)
-
-    sr2_home = resolve_sr2_home(env)
-    paths = [
-        sr2_home / "config.yaml",
-        sr2_home / "spectre.yaml",
-        cwd / ".spectre.yaml",
-    ]
-    config, _ = _resolve_tiers_with_provenance(
-        paths, sr2_home=sr2_home, cwd=cwd, env=env, require_last=False
-    )
-    return config
 
 
 def load_resolved_config_with_provenance(

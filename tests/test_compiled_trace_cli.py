@@ -94,7 +94,7 @@ async def test_compiled_request_output_printed_when_trace_set(
     side_effect, mock_instance = _agent_side_effect_with_tracer("Paris")
 
     with (
-        patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
+        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
         patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
@@ -135,7 +135,7 @@ async def test_compiled_request_output_appears_after_firing_trace(
     side_effect, _ = _agent_side_effect_with_tracer("Paris")
 
     with (
-        patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
+        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
         patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
@@ -183,7 +183,7 @@ async def test_compiled_request_render_called_with_compiled_request_attribute(
     side_effect, _ = _agent_side_effect_with_tracer("Paris")
 
     with (
-        patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
+        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
         patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
@@ -223,7 +223,7 @@ async def test_render_compiled_request_not_called_when_trace_absent(
     mock_config = _make_mock_config()
 
     with (
-        patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
+        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
         patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
@@ -251,7 +251,7 @@ async def test_compiled_request_sentinel_absent_from_stdout_without_trace_flag(
     mock_config = _make_mock_config()
 
     with (
-        patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
+        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
         patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,

@@ -71,7 +71,7 @@ async def test_trace_flag_wires_collecting_tracer_into_agent(
     captured_tracer: list = []
 
     with (
-        patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
+        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
         patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface()),
         patch("sr2_spectre.cli.Agent") as MockAgent,
@@ -125,7 +125,7 @@ async def test_trace_output_printed_after_reply(
     TRACE_SENTINEL = "<<TRACE_OUTPUT_SENTINEL>>"
 
     with (
-        patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
+        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
         patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
@@ -182,7 +182,7 @@ async def test_no_trace_output_when_flag_absent(
     mock_config = _make_mock_config()
 
     with (
-        patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
+        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
         patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,

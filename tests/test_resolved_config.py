@@ -489,11 +489,11 @@ def _make_mock_plugin() -> MagicMock:
 
 class TestCliRoutesPositionalThroughResolver:
     """Test A1: run_async must route the positional path through the unified
-    resolver (sr2_spectre.cli.load_resolved_config), not the old load_config."""
+    resolver (sr2_spectre.cli.resolve_config), not the old load_config."""
 
     @pytest.mark.asyncio
     async def test_run_async_calls_unified_resolver_with_positional_path(self):
-        """run_async('myrun.yaml', ...) calls load_resolved_config once with
+        """run_async('myrun.yaml', ...) calls resolve_config once with
         the positional path as its first argument.
 
         This asserts ONLY the wiring — that the CLI hands the positional file to
@@ -508,7 +508,7 @@ class TestCliRoutesPositionalThroughResolver:
             # so this test fails for the right reason (resolver not wired) rather
             # than an AttributeError at patch time.
             patch(
-                "sr2_spectre.cli.load_resolved_config",
+                "sr2_spectre.cli.resolve_config",
                 resolver_spy,
                 create=True,
             ),
@@ -533,7 +533,7 @@ class TestCliRoutesPositionalThroughResolver:
 
         assert resolver_spy.call_count == 1, (
             "run_async did not route the positional file through "
-            "load_resolved_config (still calling load_config?)"
+            "resolve_config (still calling load_config?)"
         )
         # The positional path is the first positional argument to the resolver.
         called_positional = resolver_spy.call_args.args[0]

@@ -66,7 +66,7 @@ def _run_config_show(argv: list[str]) -> int:
     """Execute the 'config show' dry-run command. Returns exit code (0 or 1).
 
     Uses SpectreConfig (pydantic) as the single validation source of truth,
-    matching the real startup path in load_resolved_config().
+    matching the real startup path in resolve_config().
     """
     from sr2_spectre.config import (
         format_dry_run,
@@ -203,7 +203,7 @@ def _configure_logging(level: str, log_file: str) -> None:
     logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
-def load_resolved_config(
+def resolve_config(
     positional_path: str | Path,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
@@ -226,13 +226,13 @@ async def run_async(argv: list[str] | None = None) -> None:
 
     logger.info("SR2 Spectre starting")
 
-    config = load_resolved_config(
+    config = resolve_config(
         args.config, cwd=Path.cwd(), env=dict(os.environ)
     )
     logger.info(
         "Agent: %s | model: %s",
         config.agent.name,
-        config.models.get("default", {}).model if hasattr(config.models.get("default", {}), "model") else "unknown",
+        config.models["default"].model,
     )
 
     tracer = CollectingTracer() if args.trace else None
