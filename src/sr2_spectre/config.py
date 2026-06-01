@@ -97,22 +97,16 @@ def resolve_extends(
     config: dict,
     declaring_file: Path,
     env: dict[str, str] | None = None,
-    _chain: list[Path] | None = None,
 ) -> dict:
     """Resolve extends: key recursively, building the full inheritance chain.
 
-    Loads the extended file first, then merges the declaring config on top.
-    Supports chains (A extends B extends C). Circular references raise
-    CircularExtendsError.
-
-    The full chain is built before merging: given A extends B extends C,
-    the chain is [C, B, A] and configs are merged left to right (C is base).
+    Thin wrapper around ``_resolve_extends_with_provenance`` that drops
+    the provenance output. Public API — used by tests and legacy loaders.
 
     Args:
         config: The already-parsed config dict from the declaring file.
         declaring_file: Absolute path to the declaring config file.
         env: Environment variables for ${VAR} interpolation in extends paths.
-        _chain: Internal — tracks the chain of resolved files for cycle detection.
 
     Returns:
         The fully-merged config dict with extends applied.
@@ -121,54 +115,28 @@ def resolve_extends(
         CircularExtendsError: If a file appears twice in the extends chain.
         FileNotFoundError: If the extended file does not exist.
     """
-    if _chain is None:
-        _chain = []
-
-    # Normalise declaring_file to an absolute resolved path for cycle detection.
-    declaring_file = declaring_file.resolve()
-
-    # Detect cycle: this file already appears in the chain being built.
-    if declaring_file in _chain:
-        chain_str = " -> ".join(str(p) for p in _chain) + f" -> {declaring_file}"
-        raise CircularExtendsError(
-            f"Circular 'extends:' detected: {chain_str}"
-        )
-
-    # Record this file in the chain.
-    current_chain = _chain + [declaring_file]
-
-    extends_raw = config.get("extends")
-    if extends_raw is None:
-        # No extends: return config unchanged.
-        return config
-
-    # Resolve the extends path via FR10 rules.
-    parent_path = resolve_path(str(extends_raw), declaring_file, env)
-
-    if not parent_path.exists():
-        raise FileNotFoundError(
-            f"Extended config file not found: {parent_path} "
-            f"(referenced from {declaring_file})"
-        )
-
-    # Load the parent file.
-    parent_raw = yaml.safe_load(parent_path.read_text())
-    if parent_raw is None:
-        parent_raw = {}
-
-    # Recursively resolve the parent's own extends chain.
-    parent_resolved = resolve_extends(
-        parent_raw,
-        declaring_file=parent_path,
+    declaring_source = f"{declaring_file}"
+    resolved_config, _ = _resolve_extends_with_provenance(
+        config,
+        declaring_file=declaring_file,
+        declaring_source=declaring_source,
         env=env,
-        _chain=current_chain,
     )
+    return resolved_config
 
-    # Strip 'extends' from the declaring config before merging.
-    child_without_extends = {k: v for k, v in config.items() if k != "extends"}
 
-    # Merge: parent is base, child on top.
-    return merge_configs(parent_resolved, child_without_extends)
+def _default_tier_paths(sr2_home: Path, cwd: Path) -> list[Path]:
+    """Return the standard 3-tier config paths (lowest → highest priority).
+
+    Tier 1. ``$SR2_HOME/config.yaml``   — user global defaults
+    Tier 2. ``$SR2_HOME/spectre.yaml``  — spectre-specific defaults
+    Tier 3. ``<cwd>/.spectre.yaml``     — project overrides
+    """
+    return [
+        sr2_home / "config.yaml",
+        sr2_home / "spectre.yaml",
+        cwd / ".spectre.yaml",
+    ]
 
 
 def resolve_sr2_home(env: dict[str, str] | None = None) -> Path:
@@ -193,7 +161,7 @@ def load_merged_config(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> dict:
-    """Load and merge config from all four tiers.
+    """Load and merge config from the default 3 tiers (no positional file).
 
     Tier order (lowest to highest priority):
     1. $SR2_HOME/config.yaml      — user global defaults
@@ -204,32 +172,20 @@ def load_merged_config(
     Missing files at any tier are silently skipped.
     Returns the merged config dict.
 
-    Args:
-        cwd: Working directory for tier 3 lookup. Defaults to Path.cwd().
-        env: Environment variables dict. Defaults to os.environ.
+    .. note:: Test-only; kept for tier-merge tests.
     """
     if cwd is None:
         cwd = Path.cwd()
+    if env is None:
+        env = dict(os.environ)
 
     sr2_home = resolve_sr2_home(env)
+    paths = _default_tier_paths(sr2_home, cwd)
 
-    tier_paths = [
-        sr2_home / "config.yaml",
-        sr2_home / "spectre.yaml",
-        cwd / ".spectre.yaml",
-    ]
-
-    result: dict = {}
-    for path in tier_paths:
-        if not path.exists():
-            continue
-        raw = yaml.safe_load(path.read_text())
-        if raw is None:
-            raw = {}
-        raw = resolve_extends(raw, declaring_file=path, env=env)
-        result = merge_configs(result, raw)
-
-    return result
+    merged, _ = _resolve_tiers_with_provenance(
+        paths, sr2_home=sr2_home, cwd=cwd, env=env, require_last=False
+    )
+    return merged
 
 
 def _tier_label(path: Path, sr2_home: Path, cwd: Path) -> str:
@@ -380,6 +336,9 @@ def load_config_with_provenance(
 ) -> tuple[dict, dict]:
     """Load config tracking the winning source for each top-level key.
 
+    Delegates to ``_resolve_tiers_with_provenance`` with the default 3-tier
+    paths. See that function for tier order and provenance semantics.
+
     Returns:
         (merged_config, provenance_map)
         provenance_map has the same top-level key structure as merged_config,
@@ -395,43 +354,11 @@ def load_config_with_provenance(
         env = dict(os.environ)
 
     sr2_home = resolve_sr2_home(env)
+    paths = _default_tier_paths(sr2_home, cwd)
 
-    tier_paths = [
-        sr2_home / "config.yaml",
-        sr2_home / "spectre.yaml",
-        cwd / ".spectre.yaml",
-    ]
-
-    result: dict = {}
-    result_provenance: dict = {}
-
-    for path in tier_paths:
-        if not path.exists():
-            continue
-        raw = yaml.safe_load(path.read_text())
-        if raw is None:
-            raw = {}
-
-        source = _tier_label(path, sr2_home, cwd)
-        tier_config, tier_provenance = _resolve_extends_with_provenance(
-            raw,
-            declaring_file=path,
-            declaring_source=source,
-            env=env,
-        )
-
-        # Merge config
-        result = merge_configs(result, tier_config)
-
-        # Merge provenance: current tier wins for keys it provides
-        result_provenance = _merge_provenance(
-            parent_provenance=result_provenance,
-            child_provenance=tier_provenance,
-            child_config=tier_config,
-            parent_config=result,
-        )
-
-    return result, result_provenance
+    return _resolve_tiers_with_provenance(
+        paths, sr2_home=sr2_home, cwd=cwd, env=env, require_last=False
+    )
 
 
 def _resolve_tiers_with_provenance(
@@ -537,12 +464,7 @@ def load_resolved_config_with_provenance(
 
     sr2_home = resolve_sr2_home(env)
 
-    paths = [
-        sr2_home / "config.yaml",
-        sr2_home / "spectre.yaml",
-        cwd / ".spectre.yaml",
-        Path(positional_path),
-    ]
+    paths = _default_tier_paths(sr2_home, cwd) + [Path(positional_path)]
 
     return _resolve_tiers_with_provenance(
         paths,
