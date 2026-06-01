@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "sr2_spectre",
+  "project_id": "36ffc2cc-2c2b-415b-a2f2-db47e668c8b6"
+}
