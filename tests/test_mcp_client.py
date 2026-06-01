@@ -326,3 +326,142 @@ async def test_close_after_connect_exits_session_context() -> None:
 
     # The session context manager's __aexit__ must have been called
     session_ctx.__aexit__.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Requirement 12: close() suppresses RuntimeError (cancel scope mismatch)
+# ---------------------------------------------------------------------------
+
+async def test_close_suppresses_runtime_error_on_session_aexit() -> None:
+    """close() must NOT propagate RuntimeError from session __aexit__.
+
+    This is the cancel scope mismatch that anyio raises when the session
+    is closed in a different task than it was entered — the classic
+    'Attempted to exit cancel scope in a different task than it was entered in'.
+    """
+    mock_session = _make_mock_session([_make_mcp_tool()])
+    transport_ctx = _make_transport_ctx()
+
+    # Session __aexit__ raises RuntimeError (simulating cancel scope mismatch)
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    session_ctx.__aexit__ = AsyncMock(
+        side_effect=RuntimeError(
+            "Attempted to exit cancel scope in a different task than it was entered in"
+        )
+    )
+
+    with (
+        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+    ):
+        from sr2_spectre.mcp.client import MCPClient
+
+        client = MCPClient("stdio", command=["srv"])
+        await client.connect()
+        await client.close()  # must not raise
+
+    session_ctx.__aexit__.assert_awaited()
+
+
+async def test_close_suppresses_runtime_error_on_transport_aexit() -> None:
+    """close() must NOT propagate RuntimeError from transport __aexit__."""
+    mock_session = _make_mock_session([_make_mcp_tool()])
+
+    # Transport __aexit__ raises RuntimeError
+    transport_ctx = AsyncMock()
+    transport_ctx.__aenter__ = AsyncMock(
+        return_value=(AsyncMock(), AsyncMock())
+    )
+    transport_ctx.__aexit__ = AsyncMock(
+        side_effect=RuntimeError("cancel scope error")
+    )
+
+    session_ctx = _make_session_ctx(mock_session)
+
+    with (
+        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+    ):
+        from sr2_spectre.mcp.client import MCPClient
+
+        client = MCPClient("stdio", command=["srv"])
+        await client.connect()
+        await client.close()  # must not raise
+
+    transport_ctx.__aexit__.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Requirement 13: close() suppresses GeneratorExit
+# ---------------------------------------------------------------------------
+
+async def test_close_suppresses_generator_exit_on_session_aexit() -> None:
+    """close() must NOT propagate GeneratorExit from session __aexit__."""
+    mock_session = _make_mock_session([_make_mcp_tool()])
+    transport_ctx = _make_transport_ctx()
+
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    session_ctx.__aexit__ = AsyncMock(side_effect=GeneratorExit())
+
+    with (
+        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+    ):
+        from sr2_spectre.mcp.client import MCPClient
+
+        client = MCPClient("stdio", command=["srv"])
+        await client.connect()
+        await client.close()  # must not raise
+
+    session_ctx.__aexit__.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Requirement 14: close() clears internal state after teardown
+# ---------------------------------------------------------------------------
+
+async def test_close_clears_internal_state() -> None:
+    """After close(), _session_ctx and _transport_ctx must be None."""
+    mock_session = _make_mock_session([_make_mcp_tool()])
+    transport_ctx = _make_transport_ctx()
+    session_ctx = _make_session_ctx(mock_session)
+
+    with (
+        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+    ):
+        from sr2_spectre.mcp.client import MCPClient
+
+        client = MCPClient("stdio", command=["srv"])
+        await client.connect()
+        assert client._session_ctx is not None
+        assert client._transport_ctx is not None
+
+        await client.close()
+
+        assert client._session_ctx is None
+        assert client._transport_ctx is None
+
+
+# ---------------------------------------------------------------------------
+# Requirement 15: close() is idempotent — safe to call multiple times
+# ---------------------------------------------------------------------------
+
+async def test_close_is_idempotent() -> None:
+    """Calling close() multiple times must not raise."""
+    mock_session = _make_mock_session([_make_mcp_tool()])
+    transport_ctx = _make_transport_ctx()
+    session_ctx = _make_session_ctx(mock_session)
+
+    with (
+        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+    ):
+        from sr2_spectre.mcp.client import MCPClient
+
+        client = MCPClient("stdio", command=["srv"])
+        await client.connect()
+        await client.close()
+        await client.close()  # second call must not raise
