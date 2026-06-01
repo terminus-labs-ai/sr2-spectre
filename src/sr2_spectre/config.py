@@ -86,14 +86,6 @@ class CircularExtendsError(Exception):
     """Raised when a circular 'extends:' chain is detected in config files."""
 
 
-class StartupConfigError(Exception):
-    """Raised when config validation fails at startup."""
-
-    def __init__(self, errors: list[str]) -> None:
-        self.errors = errors
-        super().__init__("\n".join(errors))
-
-
 def resolve_extends(
     config: dict,
     declaring_file: Path,
@@ -627,7 +619,7 @@ def format_dry_run(
     Args:
         config: The merged config dict.
         provenance: The provenance map from load_config_with_provenance.
-        errors: List of validation error strings from validate_config.
+        errors: List of validation error strings (from SpectreConfig pydantic validation).
         include_content: If True, include raw file content (reserved, not used).
         show_provenance: If True, annotate each top-level key with its source.
 
@@ -670,105 +662,7 @@ def format_dry_run(
     return "\n".join(lines) + "\n"
 
 
-def validate_config(config: dict) -> list[str]:
-    """Return a list of validation error strings. Empty = valid.
 
-    Rules:
-    - If agent key present and has 'name': must be a non-empty string.
-    - If models key present: must be a dict; each entry must have a non-empty 'model' field.
-    - If pipeline key present and has 'layers': each layer must have a non-empty 'name';
-      each resolver/transformer within a layer must be a dict.
-    """
-    errors: list[str] = []
-
-    # --- agent ---
-    agent = config.get("agent")
-    if isinstance(agent, dict) and "name" in agent:
-        name = agent["name"]
-        if not isinstance(name, str) or not name:
-            errors.append("agent.name must be a non-empty string")
-
-    # --- models ---
-    models = config.get("models")
-    if models is not None:
-        if not isinstance(models, dict):
-            errors.append("models must be a dict mapping names to model configs")
-        else:
-            for entry_name, entry in models.items():
-                if not isinstance(entry, dict):
-                    errors.append(
-                        f"models.{entry_name} must be a dict"
-                    )
-                    continue
-                model_field = entry.get("model")
-                if model_field is None:
-                    errors.append(
-                        f"models.{entry_name} is missing required 'model' field"
-                    )
-                elif not isinstance(model_field, str) or not model_field:
-                    errors.append(
-                        f"models.{entry_name}.model must be a non-empty string"
-                    )
-
-    # --- pipeline ---
-    pipeline = config.get("pipeline")
-    if isinstance(pipeline, dict) and "layers" in pipeline:
-        layers = pipeline["layers"]
-        if isinstance(layers, list):
-            for i, layer in enumerate(layers):
-                if not isinstance(layer, dict):
-                    errors.append(f"pipeline.layers[{i}] must be a dict")
-                    continue
-                layer_name = layer.get("name")
-                if layer_name is None:
-                    errors.append(
-                        f"pipeline.layers[{i}] is missing required 'name' field"
-                    )
-                elif not isinstance(layer_name, str) or not layer_name:
-                    errors.append(
-                        f"pipeline.layers[{i}].name must be a non-empty string"
-                    )
-                for section in ("resolvers", "transformers"):
-                    items = layer.get(section)
-                    if items is None:
-                        continue
-                    if isinstance(items, list):
-                        for j, item in enumerate(items):
-                            if not isinstance(item, dict):
-                                errors.append(
-                                    f"pipeline.layers[{i}].{section}[{j}] must be a dict"
-                                )
-
-    return errors
-
-
-def load_and_validate(
-    cwd: Path | None = None,
-    env: dict[str, str] | None = None,
-) -> dict:
-    """Load, merge, extend, and validate config. Raises StartupConfigError on any error.
-
-    Calls load_merged_config first. Structural errors (CircularExtendsError,
-    ConfigPathError) propagate directly — they abort immediately. Validation errors
-    from validate_config are aggregated and raised together as StartupConfigError.
-
-    Args:
-        cwd: Working directory for tier 3 lookup. Defaults to Path.cwd().
-        env: Environment variables dict. Defaults to os.environ.
-
-    Returns:
-        The validated merged config dict.
-
-    Raises:
-        CircularExtendsError: If a circular extends chain is detected.
-        ConfigPathError: If an unresolved ${VAR} is found in a path.
-        StartupConfigError: If validate_config returns any errors.
-    """
-    merged = load_merged_config(cwd=cwd, env=env)
-    errors = validate_config(merged)
-    if errors:
-        raise StartupConfigError(errors)
-    return merged
 
 
 def load_config(source: str | Path | dict) -> SpectreConfig:

@@ -63,13 +63,17 @@ def _parse_config_show_args(argv: list[str]) -> argparse.Namespace:
 
 
 def _run_config_show(argv: list[str]) -> int:
-    """Execute the 'config show' dry-run command. Returns exit code (0 or 1)."""
+    """Execute the 'config show' dry-run command. Returns exit code (0 or 1).
+
+    Uses SpectreConfig (pydantic) as the single validation source of truth,
+    matching the real startup path in load_resolved_config().
+    """
     from sr2_spectre.config import (
         format_dry_run,
         load_config_with_provenance,
         load_resolved_config_with_provenance,
-        validate_config,
     )
+    from pydantic import ValidationError
 
     args = _parse_config_show_args(argv)
 
@@ -88,7 +92,13 @@ def _run_config_show(argv: list[str]) -> int:
         print(f"# Error loading config: {exc}", file=sys.stdout)
         return 1
 
-    errors = validate_config(config)
+    # Validate through the same path as real startup: build SpectreConfig.
+    # This ensures dry-run and startup agree on validity.
+    errors: list[str] = []
+    try:
+        SpectreConfig(**config)
+    except ValidationError as exc:
+        errors = [f"{err['loc'][0] if err['loc'] else '?'}: {err['msg']}" for err in exc.errors()]
 
     output = format_dry_run(
         config=config,

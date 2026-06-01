@@ -424,6 +424,7 @@ class TestCliConfigShow:
         _write_yaml(cwd / ".spectre.yaml", {
             "agent": {"name": "spectre"},
             "models": {"default": {"model": "gpt-4o"}},
+            "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })
 
         result = _run_cli(
@@ -440,7 +441,9 @@ class TestCliConfigShow:
         cwd.mkdir()
 
         _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": ""},  # invalid: empty name
+            "agent": {"name": "spectre"},
+            "models": {"default": {"base_url": "https://example.com"}},  # missing required 'model' field
+            "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })
 
         result = _run_cli(
@@ -475,6 +478,8 @@ class TestCliConfigShow:
 
         _write_yaml(cwd / ".spectre.yaml", {
             "agent": {"name": "spectre"},
+            "models": {"default": {"model": "gpt-4o"}},
+            "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })
 
         result = _run_cli(
@@ -494,6 +499,8 @@ class TestCliConfigShow:
 
         _write_yaml(cwd / ".spectre.yaml", {
             "agent": {"name": "spectre"},
+            "models": {"default": {"model": "gpt-4o"}},
+            "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })
 
         result = _run_cli(
@@ -512,7 +519,9 @@ class TestCliConfigShow:
         cwd.mkdir()
 
         _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": ""},  # invalid
+            "agent": {"name": "spectre"},
+            "models": {"default": {"base_url": "https://example.com"}},  # missing required 'model' field
+            "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })
 
         result = _run_cli(
@@ -520,7 +529,7 @@ class TestCliConfigShow:
             cwd=str(cwd),
         )
         # Errors should be in stdout (the formatted report), not just stderr
-        assert "agent" in result.stdout.lower() or "name" in result.stdout.lower()
+        assert "model" in result.stdout.lower() or "error" in result.stdout.lower()
 
     def test_config_show_does_not_launch_agent(self, tmp_path):
         """'config show' must not attempt to load any LLM or Agent."""
@@ -532,7 +541,11 @@ class TestCliConfigShow:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {"agent": {"name": "spectre"}})
+        _write_yaml(cwd / ".spectre.yaml", {
+            "agent": {"name": "spectre"},
+            "models": {"default": {"model": "gpt-4o"}},
+            "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
+        })
 
         result = _run_cli(
             ["config", "show", f"--sr2-home={sr2_home}"],
