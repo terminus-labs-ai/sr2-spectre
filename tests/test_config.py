@@ -5,9 +5,7 @@ import pytest
 from pydantic import ValidationError
 from sr2_spectre.config import (
     AgentConfig,
-    HeartbeatConfig,
     ModelConfig,
-    PluginConfig,
     SpectreConfig,
     ToolConfig,
     load_config,
@@ -91,40 +89,7 @@ class TestSpectreConfig:
                 models={"default": ModelConfig(model="openai/gpt-4o")},
             )
 
-    def test_plugins_default_empty(self):
-        cfg = SpectreConfig(
-            agent=AgentConfig(),
-            models={"default": ModelConfig(model="x")},
-            pipeline=self._make_pipeline_dict(),
-        )
-        assert cfg.plugins == []
-
-    def test_heartbeat_optional(self):
-        cfg = SpectreConfig(
-            agent=AgentConfig(),
-            models={"default": ModelConfig(model="x")},
-            pipeline=self._make_pipeline_dict(),
-        )
-        assert cfg.heartbeat is None
-
-    def test_with_plugins(self):
-        cfg = SpectreConfig(
-            agent=AgentConfig(),
-            models={"default": ModelConfig(model="x")},
-            pipeline=self._make_pipeline_dict(),
-            plugins=[PluginConfig(name="tui", class_path="sr2_spectre.plugins.tui:TUI")],
-        )
-        assert len(cfg.plugins) == 1
-
-
-# ---------------------------------------------------------------------------
-# HeartbeatConfig (unchanged)
-# ---------------------------------------------------------------------------
-
-def test_heartbeat_config_defaults() -> None:
-    hb = HeartbeatConfig()
-    assert hb.interval_seconds == 60
-    assert hb.callback is None
+ 
 
 
 # ---------------------------------------------------------------------------

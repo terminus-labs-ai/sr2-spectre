@@ -1,10 +1,10 @@
-"""Tests for SingleShotPlugin."""
+"""Tests for SingleShotInterface."""
 import sys
 import pytest
 from io import StringIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from sr2_spectre.plugins.single_shot import SingleShotPlugin
+from sr2_spectre.interfaces.single_shot import SingleShotInterface
 from sr2_spectre.core import TurnResult
 
 
@@ -18,7 +18,7 @@ def _make_agent(response_text: str = "The answer is 4") -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_start_stop_are_noops() -> None:
-    plugin = SingleShotPlugin(prompt="hello")
+    plugin = SingleShotInterface(prompt="hello")
     agent = _make_agent()
     await plugin.start(agent)
     await plugin.stop()
@@ -27,7 +27,7 @@ async def test_start_stop_are_noops() -> None:
 
 @pytest.mark.asyncio
 async def test_run_with_constructor_prompt(capsys: pytest.CaptureFixture) -> None:
-    plugin = SingleShotPlugin(prompt="What is 2+2?")
+    plugin = SingleShotInterface(prompt="What is 2+2?")
     agent = _make_agent("4")
 
     await plugin.run(agent)
@@ -39,7 +39,7 @@ async def test_run_with_constructor_prompt(capsys: pytest.CaptureFixture) -> Non
 
 @pytest.mark.asyncio
 async def test_run_reads_from_stdin(capsys: pytest.CaptureFixture) -> None:
-    plugin = SingleShotPlugin()
+    plugin = SingleShotInterface()
     agent = _make_agent("pong")
 
     with patch("sys.stdin", StringIO("ping\n")), patch("sys.argv", ["sr2-spectre"]):
@@ -52,7 +52,7 @@ async def test_run_reads_from_stdin(capsys: pytest.CaptureFixture) -> None:
 
 @pytest.mark.asyncio
 async def test_run_empty_prompt_exits(capsys: pytest.CaptureFixture) -> None:
-    plugin = SingleShotPlugin()
+    plugin = SingleShotInterface()
     agent = _make_agent()
 
     with patch("sys.stdin", StringIO("")), patch("sys.argv", ["sr2-spectre"]):
@@ -63,15 +63,22 @@ async def test_run_empty_prompt_exits(capsys: pytest.CaptureFixture) -> None:
     agent.handle_user_message.assert_not_called()
 
 
-def test_load_plugin_via_cli() -> None:
-    """_load_plugin('single_shot') must return a SingleShotPlugin instance."""
+def test_load_interface_via_cli() -> None:
+    """_load_interface('single_shot') must return a SingleShotInterface instance."""
+    from sr2_spectre.cli import _load_interface
+    plugin = _load_interface("single_shot")
+    assert isinstance(plugin, SingleShotInterface)
+
+
+def test_load_interface_with_prompt_kwarg() -> None:
+    from sr2_spectre.cli import _load_interface
+    plugin = _load_interface("single_shot", prompt="hello")
+    assert isinstance(plugin, SingleShotInterface)
+    assert plugin._prompt == "hello"
+
+
+def test_load_plugin_alias() -> None:
+    """_load_plugin (deprecated alias) must still work."""
     from sr2_spectre.cli import _load_plugin
     plugin = _load_plugin("single_shot")
-    assert isinstance(plugin, SingleShotPlugin)
-
-
-def test_load_plugin_with_prompt_kwarg() -> None:
-    from sr2_spectre.cli import _load_plugin
-    plugin = _load_plugin("single_shot", prompt="hello")
-    assert isinstance(plugin, SingleShotPlugin)
-    assert plugin._prompt == "hello"
+    assert isinstance(plugin, SingleShotInterface)

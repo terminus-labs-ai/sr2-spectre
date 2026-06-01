@@ -1,8 +1,8 @@
 """CLI entry point for sr2-spectre.
 
 Usage:
-    sr2-spectre config.yaml --plugin single_shot "What is the weather?"
-    sr2-spectre config.yaml --plugin tui
+    sr2-spectre config.yaml --interface single_shot "What is the weather?"
+    sr2-spectre config.yaml --interface tui
     sr2-spectre config show [--no-provenance] [--sr2-home PATH]
 """
 from __future__ import annotations
@@ -112,10 +112,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to YAML config file (required)",
     )
     parser.add_argument(
-        "--plugin",
+        "--interface",
         type=str,
         default="single_shot",
-        help="Plugin to run: single_shot, tui (default: single_shot)",
+        help="Interface to run: single_shot, tui (default: single_shot)",
+    )
+    parser.add_argument(
+        "--plugin",
+        type=str,
+        default=None,
+        help="[DEPRECATED] Use --interface instead. Kept for backwards compatibility.",
     )
     parser.add_argument(
         "--session-id",
@@ -147,18 +153,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _load_plugin(plugin_name: str, **kwargs: Any) -> Any:
-    """Load a plugin class by name."""
-    known_plugins = {
-        "single_shot": "sr2_spectre.plugins.single_shot.SingleShotPlugin",
-        "tui": "sr2_spectre.plugins.tui.TUIPlugin",
+def _load_interface(interface_name: str, **kwargs: Any) -> Any:
+    """Load an interface class by name."""
+    known_interfaces = {
+        "single_shot": "sr2_spectre.interfaces.single_shot.SingleShotInterface",
+        "tui": "sr2_spectre.interfaces.tui.TUIInterface",
     }
 
-    class_path = known_plugins.get(plugin_name, plugin_name)
+    class_path = known_interfaces.get(interface_name, interface_name)
     module_path, class_name = class_path.rsplit(".", 1)
     mod = importlib.import_module(module_path)
     cls = getattr(mod, class_name)
     return cls(**kwargs)
+
+
+# Backwards compatibility alias
+_load_plugin = _load_interface
 
 
 def _configure_logging(level: str, log_file: str) -> None:
@@ -229,14 +239,17 @@ async def run_async(argv: list[str] | None = None) -> None:
             session_id=args.session_id,
         )
 
+    # Resolve interface name: --plugin (deprecated) overrides --interface if provided
+    interface_name = args.plugin if args.plugin is not None else args.interface
+
     plugin_kwargs: dict[str, Any] = {}
-    if args.plugin == "single_shot" and args.prompt:
+    if interface_name == "single_shot" and args.prompt:
         plugin_kwargs["prompt"] = " ".join(args.prompt)
 
     await agent.initialize()
 
     try:
-        plugin = _load_plugin(args.plugin, **plugin_kwargs)
+        plugin = _load_interface(interface_name, **plugin_kwargs)
 
         await plugin.start(agent)
         await plugin.run(agent)

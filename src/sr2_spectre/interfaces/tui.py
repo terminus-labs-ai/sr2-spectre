@@ -1,6 +1,6 @@
-"""TUI plugin — interactive loop with prompt-toolkit.
+"""TUI interface — interactive loop with prompt-toolkit.
 
-Usage: sr2-spectre --plugin tui
+Usage: sr2-spectre --interface tui
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ Commands:
 """
 
 
-class TUIPlugin:
+class TUIInterface:
     name = "tui"
 
     def __init__(self) -> None:

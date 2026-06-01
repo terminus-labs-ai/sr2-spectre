@@ -44,18 +44,18 @@ def _make_mock_config() -> MagicMock:
     return config
 
 
-def _make_mock_plugin(reply: str = "Paris") -> MagicMock:
-    """Plugin whose run() calls agent.handle_user_message and prints result."""
-    plugin = MagicMock()
-    plugin.start = AsyncMock()
-    plugin.stop = AsyncMock()
+def _make_mock_interface(reply: str = "Paris") -> MagicMock:
+    """Interface whose run() calls agent.handle_user_message and prints result."""
+    iface = MagicMock()
+    iface.start = AsyncMock()
+    iface.stop = AsyncMock()
 
     async def _run(agent: MagicMock) -> None:
         result = await agent.handle_user_message("What is the capital of France?")
         print(result.text)
 
-    plugin.run = _run
-    return plugin
+    iface.run = _run
+    return iface
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +73,7 @@ async def test_trace_flag_wires_collecting_tracer_into_agent(
     with (
         patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin()),
+        patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface()),
         patch("sr2_spectre.cli.Agent") as MockAgent,
     ):
         # Agent() returns an async-capable mock
@@ -127,7 +127,7 @@ async def test_trace_output_printed_after_reply(
     with (
         patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
+        patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
         # render_trace may be imported as a name into cli (from ... import render_trace)
         # or called qualified (sr2.pipeline.tracing.render_trace).  Patch both so the
@@ -184,7 +184,7 @@ async def test_no_trace_output_when_flag_absent(
     with (
         patch("sr2_spectre.cli.load_resolved_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
+        patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
         patch("sr2_spectre.cli.render_trace", return_value="TRACE", create=True) as mock_rt,
     ):

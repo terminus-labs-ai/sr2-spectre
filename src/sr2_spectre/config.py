@@ -4,8 +4,6 @@ SpectreConfig is a superset of SR2's PipelineConfig:
   - agent:    spectre-owned concerns (name, tools, mcp_servers)
   - models:   dict[str, ModelConfig] — LLM endpoints
   - pipeline: SR2's native PipelineConfig — passed directly to SR2()
-  - plugins:  list of plugin descriptors (unchanged)
-  - heartbeat: optional heartbeat config (unchanged)
 """
 
 from __future__ import annotations
@@ -46,19 +44,6 @@ class ToolConfig(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
-class PluginConfig(BaseModel):
-    """Configuration for a plugin."""
-    name: str
-    class_path: str  # e.g. "sr2_spectre.plugins.single_shot:SingleShotPlugin"
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class HeartbeatConfig(BaseModel):
-    """Heartbeat plugin configuration."""
-    interval_seconds: int = 60
-    callback: str | None = None  # class path or inline prompt
-
-
 class ModelConfig(BaseModel):
     """Configuration for a single LLM endpoint."""
     model: str
@@ -95,8 +80,6 @@ class SpectreConfig(BaseModel):
     agent: AgentConfig
     models: dict[str, ModelConfig]
     pipeline: PipelineConfig
-    plugins: list[PluginConfig] = Field(default_factory=list)
-    heartbeat: HeartbeatConfig | None = None
 
 
 class CircularExtendsError(Exception):

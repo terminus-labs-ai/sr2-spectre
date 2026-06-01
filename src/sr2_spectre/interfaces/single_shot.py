@@ -1,6 +1,6 @@
-"""Single-shot plugin — run one turn, print response, exit.
+"""Single-shot interface — run one turn, print response, exit.
 
-Usage: sr2-spectre --plugin single_shot "What is 2+2?"
+Usage: sr2-spectre --interface single_shot "What is 2+2?"
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from sr2_spectre.agent import Agent
 
 
-class SingleShotPlugin:
+class SingleShotInterface:
     name = "single_shot"
 
     def __init__(self, prompt: str | None = None) -> None:
