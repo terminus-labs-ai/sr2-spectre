@@ -1,4 +1,4 @@
-"""Spectre pipeline plugins — registered via entry points into SR2.
+"""Spectre pipeline providers — registered via entry points into SR2.
 
 SpectreToolProvider:
   - Entry point group: sr2.tool_providers

@@ -252,18 +252,18 @@ async def run_async(argv: list[str] | None = None) -> None:
     # Resolve interface name: --plugin (deprecated) overrides --interface if provided
     interface_name = args.plugin if args.plugin is not None else args.interface
 
-    plugin_kwargs: dict[str, Any] = {}
+    interface_kwargs: dict[str, Any] = {}
     if interface_name == "single_shot" and args.prompt:
-        plugin_kwargs["prompt"] = " ".join(args.prompt)
+        interface_kwargs["prompt"] = " ".join(args.prompt)
 
     await agent.initialize()
 
     try:
-        plugin = _load_interface(interface_name, **plugin_kwargs)
+        interface = _load_interface(interface_name, **interface_kwargs)
 
-        await plugin.start(agent)
-        await plugin.run(agent)
-        await plugin.stop()
+        await interface.start(agent)
+        await interface.run(agent)
+        await interface.stop()
     finally:
         await agent.aclose()
 
