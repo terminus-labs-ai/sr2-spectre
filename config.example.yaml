@@ -30,6 +30,12 @@ agent:
     #     base_url: http://localhost:8080   # your SearXNG URL
     #     max_results: 5
 
+    # Planning: verify-gated task completion (requires PlanResolver in pipeline)
+    # - name: complete_step
+    #   class_path: sr2_spectre.tools.builtins.complete_step.CompleteStepTool
+    #   config:
+    #     plans_root: ~/.sr2/plans   # optional; defaults to ~/.sr2/plans
+
 # LLM endpoints. "default" is required. Additional named endpoints are optional.
 models:
   default:
