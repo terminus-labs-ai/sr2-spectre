@@ -49,6 +49,7 @@ _DEFAULT_SUBSCRIPTION = EventSubscription(
 # Layer delimiter constants
 # ---------------------------------------------------------------------------
 
+_PLANNING_HEADER = "## Planning"
 _LAYER1_HEADER = "## Project Knowledge"
 _LAYER2_HEADER = "## Active Plan"
 _LAYER3_HEADER = "## Current Task"
@@ -77,6 +78,10 @@ class PlanResolver:
         **Required.**
     max_tokens : int | None
         Optional token budget for the combined injection.
+    planning_guide_path : str | None
+        Path to the planning-guide.md file. When set and no open plan
+        exists, a short nudge is injected directing the agent to load
+        this guide for multi-step work. Suppressed when a plan is open.
     """
 
     name: str = "plan"
@@ -110,6 +115,11 @@ class PlanResolver:
 
         self._max_tokens: int | None = config.config.get("max_tokens")
 
+        # Optional: planning guide path for state-aware trigger injection.
+        self._planning_guide_path: str | None = config.config.get(
+            "planning_guide_path"
+        )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -128,13 +138,24 @@ class PlanResolver:
 
         layers: list[tuple[str, str]] = []  # (layer_header, content)
 
+        # Resolve the single open plan (or none) — called once, used for both
+        # the planning trigger decision and L2/L3 injection.
+        open_plan_dir, plan_frontmatter = self._find_open_plan()
+
+        # Planning trigger: inject only when no open plan and guide path configured.
+        # When a plan IS open, L2/L3 already carry the context, so the nudge is
+        # redundant noise.
+        if self._planning_guide_path and not open_plan_dir:
+            trigger = (
+                f"> For multi-step tasks, load the planning guide "
+                f"(`file_read` `{self._planning_guide_path}`) and create a plan."
+            )
+            layers.append((_PLANNING_HEADER, trigger))
+
         # L1: project knowledge
         l1_content = self._resolve_layer1()
         if l1_content:
             layers.append((_LAYER1_HEADER, l1_content))
-
-        # Resolve the single open plan (or none)
-        open_plan_dir, plan_frontmatter = self._find_open_plan()
 
         if open_plan_dir and plan_frontmatter:
             # L2: plan-shared (_plan.md) — always injected when plan is open,
