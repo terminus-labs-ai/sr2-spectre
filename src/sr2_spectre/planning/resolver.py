@@ -26,7 +26,7 @@ from sr2.pipeline.models import ResolvedContent
 from sr2.pipeline.token_counting import CHARS_PER_TOKEN
 from sr2.pipeline.utils import PHASE_MAP, build_subscriptions
 
-from sr2_spectre.planning.frontmatter import parse_file
+from sr2_spectre.planning.frontmatter import parse_file, parse_frontmatter
 from sr2_spectre.planning.models import (
     KnowledgeFrontmatter,
     PlanFrontmatter,
@@ -195,7 +195,7 @@ class PlanResolver:
                 logger.warning("Cannot read %s: %s — skipping", path, exc)
                 continue
 
-            fm = parse_file(path)
+            fm = parse_frontmatter(text, file_path=path)
             if isinstance(fm, KnowledgeFrontmatter) and fm.project == self._project:
                 body = self._strip_frontmatter(text)
                 if body.strip():
@@ -279,7 +279,7 @@ class PlanResolver:
                 logger.warning("Cannot read %s: %s — skipping", path, exc)
                 continue
 
-            fm = parse_file(path)
+            fm = parse_frontmatter(text, file_path=path)
             if isinstance(fm, TaskFrontmatter) and fm.status == TaskStatus.PENDING:
                 body = self._strip_frontmatter(text)
                 pending_tasks.append((fm.order, body))
