@@ -29,8 +29,8 @@ def _make_mock_config() -> MagicMock:
     return config
 
 
-def _make_mock_plugin(reply: str = "Paris") -> MagicMock:
-    """Plugin whose run() calls agent.handle_user_message and prints result."""
+def _make_mock_interface(reply: str = "Paris") -> MagicMock:
+    """Mock interface whose run() calls agent.handle_user_message and prints result."""
     plugin = MagicMock()
     plugin.start = AsyncMock()
     plugin.stop = AsyncMock()
@@ -96,7 +96,7 @@ async def test_compiled_request_output_printed_when_trace_set(
     with (
         patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
+        patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
         patch(
             "sr2_spectre.cli.render_trace",
@@ -137,7 +137,7 @@ async def test_compiled_request_output_appears_after_firing_trace(
     with (
         patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
+        patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
         patch(
             "sr2_spectre.cli.render_trace",
@@ -185,7 +185,7 @@ async def test_compiled_request_render_called_with_compiled_request_attribute(
     with (
         patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
+        patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
         patch(
             "sr2_spectre.cli.render_trace",
@@ -225,7 +225,7 @@ async def test_render_compiled_request_not_called_when_trace_absent(
     with (
         patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
+        patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
         patch(
             "sr2_spectre.cli.render_compiled_request",
@@ -253,7 +253,7 @@ async def test_compiled_request_sentinel_absent_from_stdout_without_trace_flag(
     with (
         patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
         patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_plugin", return_value=_make_mock_plugin("Paris")),
+        patch("sr2_spectre.cli._load_interface", return_value=_make_mock_interface("Paris")),
         patch("sr2_spectre.cli.Agent") as MockAgent,
         patch(
             "sr2_spectre.cli.render_trace",

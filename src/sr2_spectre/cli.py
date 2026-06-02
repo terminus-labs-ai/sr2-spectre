@@ -127,12 +127,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="single_shot",
         help="Interface to run: single_shot, tui (default: single_shot)",
     )
-    parser.add_argument(
-        "--plugin",
-        type=str,
-        default=None,
-        help="[DEPRECATED] Use --interface instead. Kept for backwards compatibility.",
-    )
+ 
     parser.add_argument(
         "--session-id",
         type=str,
@@ -176,9 +171,6 @@ def _load_interface(interface_name: str, **kwargs: Any) -> Any:
     cls = getattr(mod, class_name)
     return cls(**kwargs)
 
-
-# Backwards compatibility alias
-_load_plugin = _load_interface
 
 
 def _configure_logging(level: str, log_file: str) -> None:
@@ -249,8 +241,7 @@ async def run_async(argv: list[str] | None = None) -> None:
             session_id=args.session_id,
         )
 
-    # Resolve interface name: --plugin (deprecated) overrides --interface if provided
-    interface_name = args.plugin if args.plugin is not None else args.interface
+    interface_name = args.interface
 
     interface_kwargs: dict[str, Any] = {}
     if interface_name == "single_shot" and args.prompt:

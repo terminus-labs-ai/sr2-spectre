@@ -4,13 +4,11 @@ Covers:
 - Interface protocol has name, start, stop, run
 - Both builtin implementations satisfy Interface
 - --interface flag works
-- --plugin flag works as deprecated alias
 - Dead code removed: PluginConfig, HeartbeatConfig, OutputPlugin, PluginRegistry
 """
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from sr2_spectre.cli import _parse_args
 
@@ -66,19 +64,6 @@ def test_parse_args_interface_defaults_to_single_shot() -> None:
 def test_parse_args_interface_flag() -> None:
     args = _parse_args(["config.yaml", "--interface", "tui"])
     assert args.interface == "tui"
-
-
-def test_parse_args_plugin_flag_present() -> None:
-    """--plugin must be accepted as a deprecated alias."""
-    args = _parse_args(["config.yaml", "--plugin", "tui"])
-    assert args.plugin == "tui"
-
-
-def test_parse_args_plugin_and_interface() -> None:
-    """When both --plugin and --interface are provided, --plugin wins (deprecated override)."""
-    args = _parse_args(["config.yaml", "--interface", "single_shot", "--plugin", "tui"])
-    assert args.interface == "single_shot"
-    assert args.plugin == "tui"
 
 
 # ---------------------------------------------------------------------------

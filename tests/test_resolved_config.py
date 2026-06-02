@@ -473,8 +473,8 @@ def _make_mock_config() -> MagicMock:
     return config
 
 
-def _make_mock_plugin() -> MagicMock:
-    """Plugin whose run() drives one handle_user_message and prints the reply."""
+def _make_mock_interface() -> MagicMock:
+    """Mock interface whose run() drives one handle_user_message and prints the reply."""
     plugin = MagicMock()
     plugin.start = AsyncMock()
     plugin.stop = AsyncMock()
@@ -514,8 +514,8 @@ class TestCliRoutesPositionalThroughResolver:
             ),
             patch("sr2_spectre.cli._configure_logging"),
             patch(
-                "sr2_spectre.cli._load_plugin",
-                return_value=_make_mock_plugin(),
+                "sr2_spectre.cli._load_interface",
+                return_value=_make_mock_interface(),
             ),
             patch("sr2_spectre.cli.Agent") as MockAgent,
         ):

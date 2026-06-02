@@ -6,7 +6,7 @@ A full agent runtime powered by [SR2](https://github.com/terminus-labs-ai/sr2) �
 
 - **Streaming TUI** — responses stream token by token, tool calls are visible as they execute
 - **Built-in tools** — `terminal`, `file_read`, `file_write`, `web_search` (SearXNG)
-- **Plugin system** — `single_shot` for scripting, `tui` for interactive use; Discord coming soon
+- **Interface system** — `single_shot` for scripting, `tui` for interactive use; Discord coming soon
 - **SR2 pipeline** — layered context compilation with token budgets, memory, and degradation
 
 ## Install
@@ -41,7 +41,7 @@ Spectre works with any OpenAI-compatible API (Ollama, LM Studio, vLLM) and hoste
 
 **Interactive TUI:**
 ```bash
-sr2-spectre my-config.yaml --plugin tui
+sr2-spectre my-config.yaml --interface tui
 ```
 
 **Single-shot (pipe-friendly):**
@@ -84,17 +84,17 @@ Custom tools follow the same interface — point `class_path` at your class and 
 ```
 sr2-spectre/
   src/sr2_spectre/
-    agent.py          # Agent — owns history, tool loop, stream_message()
-    cli.py            # CLI entry point
-    config.py         # SpectreConfig (Pydantic)
-    events.py         # AgentEvent types (TextDelta, ToolStart, ToolResult, Done)
-    providers.py      # SpectreToolProvider — bridges tool registry into SR2 pipeline
-    plugins/
-      single_shot.py  # Non-interactive single-turn plugin
-      tui.py          # Interactive streaming TUI
+    agent.py            # Agent — owns history, tool loop, stream_message()
+    cli.py              # CLI entry point
+    config.py           # SpectreConfig (Pydantic)
+    events.py           # AgentEvent types (TextDelta, ToolStart, ToolResult, Done)
+    providers.py        # SpectreToolProvider — bridges tool registry into SR2 pipeline
+    interfaces/
+      single_shot.py    # Non-interactive single-turn interface
+      tui.py            # Interactive streaming TUI
     tools/
-      registry.py     # ToolRegistry — register, define, execute tools
-      builtins/       # Built-in tool implementations
+      registry.py       # ToolRegistry — register, define, execute tools
+      builtins/         # Built-in tool implementations
 ```
 
 Spectre owns the conversation loop and tool execution. SR2 owns context compilation, token budgets, and LLM calls. The boundary is `agent.stream_message()` → `sr2.turn()`.
