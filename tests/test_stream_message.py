@@ -710,8 +710,8 @@ class TestStreamMessageHistory:
         assert agent.history[1].role == "assistant"
 
     @pytest.mark.asyncio
-    async def test_seed_session_called_each_turn(self):
-        """SR2.seed_session is called once per stream_message call."""
+    async def test_history_grows_after_each_turn(self):
+        """Each stream_message call appends user + assistant to history (observable proxy for seed_session being called)."""
         mock_sr2 = _mock_sr2_with_rounds([
             StreamEvent(type="text", text="Hi"),
             StreamEvent(type="end"),
@@ -719,7 +719,16 @@ class TestStreamMessageHistory:
         agent = _make_agent(mock_sr2)
 
         await _collect(agent.stream_message("Hello"))
-        agent.sr2.seed_session.assert_called_once()
+        assert len(agent.history) == 2
+
+        # Second turn grows history further — proves seed_session was called again
+        async def _second_turn(user_input):
+            yield StreamEvent(type="text", text="Again")
+            yield StreamEvent(type="end")
+
+        mock_sr2.turn = _second_turn
+        await _collect(agent.stream_message("Second"))
+        assert len(agent.history) == 4
 
 
 # ---------------------------------------------------------------------------

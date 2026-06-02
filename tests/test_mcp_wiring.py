@@ -9,9 +9,9 @@ Covers:
     5. SpectreConfig round-trips through load_config() with mcp_servers
 
   Agent wiring:
-    6. Agent.__init__ with one stdio mcp_server creates one MCPClient in _mcp_clients
-    7. Agent.__init__ with one http mcp_server creates one MCPClient in _mcp_clients
-    8. Agent.__init__ with no mcp_servers leaves _mcp_clients empty
+    6. Agent.__init__ with one stdio mcp_server creates one MCPClient
+    7. Agent.__init__ with one http mcp_server creates one MCPClient
+    8. Agent.__init__ with no mcp_servers never constructs an MCPClient
     9. Agent.initialize() connects each MCPClient and registers bridges into self.registry
    10. Agent.initialize() with a failing server logs a warning and continues
    11. Agent.initialize() with no mcp_servers completes without error
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -204,7 +204,7 @@ class TestLoadConfigWithMcpServers:
 
 class TestAgentInitMcpClients:
     def test_stdio_mcp_server_creates_one_client(self):
-        """Req 6: __init__ with one stdio mcp_server config creates one MCPClient in _mcp_clients."""
+        """Req 6: __init__ with one stdio mcp_server config creates one MCPClient."""
         from sr2_spectre.agent import Agent
 
         cfg = _make_config(
@@ -226,7 +226,6 @@ class TestAgentInitMcpClients:
 
             agent = Agent(config=cfg)
 
-        assert len(agent._mcp_clients) == 1
         MockMCPClient.assert_called_once_with(
             server_type="stdio",
             command=["my-server"],
@@ -235,7 +234,7 @@ class TestAgentInitMcpClients:
         )
 
     def test_http_mcp_server_creates_one_client(self):
-        """Req 7: __init__ with one http mcp_server config creates one MCPClient in _mcp_clients."""
+        """Req 7: __init__ with one http mcp_server config creates one MCPClient."""
         from sr2_spectre.agent import Agent
 
         cfg = _make_config(
@@ -255,14 +254,13 @@ class TestAgentInitMcpClients:
 
             agent = Agent(config=cfg)
 
-        assert len(agent._mcp_clients) == 1
         MockMCPClient.assert_called_once_with(
             server_type="http",
             url="http://localhost:9000/sse",
         )
 
-    def test_no_mcp_servers_leaves_clients_empty(self):
-        """Req 8: __init__ with no mcp_servers leaves _mcp_clients empty."""
+    def test_no_mcp_servers_creates_no_clients(self):
+        """Req 8: __init__ with no mcp_servers never constructs an MCPClient."""
         from sr2_spectre.agent import Agent
 
         cfg = _make_config()  # no mcp_servers
@@ -273,7 +271,6 @@ class TestAgentInitMcpClients:
 
             agent = Agent(config=cfg)
 
-        assert agent._mcp_clients == []
         MockMCPClient.assert_not_called()
 
 

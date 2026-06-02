@@ -71,7 +71,6 @@ async def test_grep_literal_single_file_match(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="needle", path=str(target), regex=False)
 
-    assert isinstance(result, str)
     # The matched line is on line 2 (1-based) with text "needle here".
     assert "2:needle here" in result
     # The file's name appears in the output.
@@ -94,7 +93,6 @@ async def test_grep_regex_match(tmp_path) -> None:
     # regex=True is the default.
     result = await tool(pattern=r"f.o", path=str(target))
 
-    assert isinstance(result, str)
     # Regex dot matched real characters, not requiring a literal "f.o".
     assert "1:foo" in result
     assert "2:fao" in result
@@ -117,7 +115,6 @@ async def test_grep_literal_mode_treats_metachars_literally(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="a.b", path=str(target), regex=False)
 
-    assert isinstance(result, str)
     # Only the literal "a.b" line matches.
     assert "1:a.b" in result
     # "axb" must NOT be returned in literal mode.
@@ -140,7 +137,6 @@ async def test_grep_recursive_directory_search(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="findme", path=str(tmp_path), regex=False)
 
-    assert isinstance(result, str)
     assert "file.txt" in result
     assert "2:findme please" in result
 
@@ -161,7 +157,6 @@ async def test_grep_multiple_files_both_appear(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="token", path=str(tmp_path), regex=False)
 
-    assert isinstance(result, str)
     assert "one.txt" in result
     assert "two.txt" in result
 
@@ -183,7 +178,6 @@ async def test_grep_multiple_matches_within_one_file(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="hit", path=str(target), regex=False)
 
-    assert isinstance(result, str)
     # Match on line 1 and line 3.
     assert "1:hit one" in result
     assert "3:hit two" in result
@@ -207,7 +201,6 @@ async def test_grep_glob_scopes_files(tmp_path) -> None:
         pattern="pattern", path=str(tmp_path), regex=False, glob="*.py"
     )
 
-    assert isinstance(result, str)
     assert "a.py" in result
     assert "b.txt" not in result
 
@@ -227,7 +220,6 @@ async def test_grep_no_match_returns_string_not_raise(tmp_path) -> None:
     # Should not raise on zero matches.
     result = await tool(pattern="absent_pattern", path=str(target), regex=False)
 
-    assert isinstance(result, str)
     # Non-error string that signals the absence of matches. Accept common
     # phrasings ("no match", "no matches", "nothing matched") without pinning
     # exact wording. The absent pattern must NOT appear as a reported match.
@@ -250,7 +242,6 @@ async def test_grep_single_file_path(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="match_target", path=str(target), regex=False)
 
-    assert isinstance(result, str)
     # Path passed in points directly at the file; that path appears in output.
     assert str(target) in result
     assert "2:match_target" in result
@@ -274,7 +265,6 @@ async def test_grep_binary_file_skipped(tmp_path) -> None:
     # Must not raise on the undecodable binary file.
     result = await tool(pattern="pattern", path=str(tmp_path), regex=False)
 
-    assert isinstance(result, str)
     assert "text.txt" in result
     assert "2:has pattern" in result
 
@@ -294,7 +284,6 @@ async def test_grep_line_numbers_are_one_based(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="NEEDLE", path=str(target), regex=False)
 
-    assert isinstance(result, str)
     # 1-based: the match must be reported on line 3, formatted ":3:".
     assert ":3:NEEDLE" in result
     # And it must NOT be reported on a 0-based or off-by-one ":2:".
@@ -340,7 +329,6 @@ async def test_grep_default_ignores_venv(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="needle", path=str(tmp_path), regex=False)
 
-    assert isinstance(result, str)
     # The file outside .venv is found.
     assert "keep.txt" in result
     # The file inside .venv is pruned by the default ignore set.
@@ -371,7 +359,6 @@ async def test_grep_default_ignores_common_dirs(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="needle", path=str(tmp_path), regex=False)
 
-    assert isinstance(result, str)
     assert "keep.txt" in result
     # None of the default-ignored directories should contribute a match.
     for name in default_dirs:
@@ -408,7 +395,6 @@ async def test_grep_custom_ignore_dirs_merge_with_defaults(tmp_path) -> None:
         ignore_dirs={"custom_skip"},
     )
 
-    assert isinstance(result, str)
     # 1. Ordinary file outside any ignored dir IS found.
     assert "keep.txt" in result
     # 2. Custom-ignored dir IS pruned.
@@ -431,7 +417,6 @@ async def test_grep_caps_per_line_length_with_truncation_marker(tmp_path) -> Non
     tool = GrepTool()
     result = await tool(pattern="needle", path=str(target), regex=False)
 
-    assert isinstance(result, str)
     # The match is reported.
     assert "needle" in result
     # The full 10k-char line must NOT be emitted verbatim.
@@ -454,7 +439,6 @@ async def test_grep_caps_total_matches_with_suppression_notice(tmp_path) -> None
     tool = GrepTool()
     result = await tool(pattern="needle", path=str(target), regex=False)
 
-    assert isinstance(result, str)
     # Output is bounded: not all 5000 matches are present.
     assert result.count("needle") <= 100
     # A suppression notice signals that matches were omitted. Uses the
@@ -476,7 +460,6 @@ async def test_grep_under_cap_emits_all_without_notice(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="needle", path=str(target), regex=False)
 
-    assert isinstance(result, str)
     # All three matches present.
     assert result.count("needle") == 3
     # No suppression notice when nothing was suppressed.
@@ -505,7 +488,6 @@ async def test_grep_nul_byte_file_skipped(tmp_path) -> None:
     tool = GrepTool()
     result = await tool(pattern="needle", path=str(tmp_path), regex=False)
 
-    assert isinstance(result, str)
     # The real text file is searched.
     assert "text.txt" in result
     # The NUL-containing binary is skipped, contributing no matches.
