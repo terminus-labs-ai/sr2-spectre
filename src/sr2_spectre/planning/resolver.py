@@ -52,6 +52,7 @@ _DEFAULT_SUBSCRIPTION = EventSubscription(
 _PLANNING_HEADER = "## Planning"
 _LAYER1_HEADER = "## Project Knowledge"
 _LAYER2_HEADER = "## Active Plan"
+_LAYER2_FINDINGS_HEADER = "## Active Findings"
 _LAYER3_HEADER = "## Current Task"
 
 _LAYER_SEPARATOR = "\n---\n"
@@ -139,6 +140,62 @@ class PlanResolver:
     def build(cls, config: ResolverConfig, deps: Dependencies) -> "PlanResolver":
         return cls(config)
 
+    def current_frame_id(self) -> str | None:
+        """Return the active frame id for the lowest-order pending task.
+
+        Returns ``plan:<plan-slug>/<task-slug>`` when an open plan has pending
+        tasks, or ``None`` when no open plan exists or all tasks are complete.
+
+        Designed to be used as ``active_frame_provider`` on
+        ``Dependencies`` — the orchestrator stamps this value into
+        ``block.meta["frame"]`` on every emitted content block.
+        """
+        open_plan_dir, plan_fm = self._find_open_plan()
+        if not open_plan_dir or not plan_fm:
+            return None
+
+        plan_slug = plan_fm.slug
+
+        # Find the lowest-order pending task
+        pending = self._find_pending_tasks(open_plan_dir)
+        if not pending:
+            return None
+
+        # Already sorted by order; pick first
+        _, task_slug = pending[0]
+        return f"plan:{plan_slug}/{task_slug}"
+
+    def _find_pending_tasks(
+        self, plan_dir: Path
+    ) -> list[tuple[int, str]]:
+        """Return sorted list of (order, slug) for pending tasks.
+
+        Slug is derived from the filename (NN-slug.md → slug).
+        """
+        pattern = str(plan_dir / "*.md")
+        paths = sorted(_glob.glob(pattern, recursive=True))
+
+        pending: list[tuple[int, str]] = []
+
+        for path_str in paths:
+            path = Path(path_str)
+            if path.name == "_plan.md":
+                continue
+
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                logger.warning("Cannot read %s: %s — skipping", path, exc)
+                continue
+
+            fm = parse_file(path)
+            if isinstance(fm, TaskFrontmatter) and fm.status == TaskStatus.PENDING:
+                slug = self._extract_slug_from_filename(path.name)
+                pending.append((fm.order, slug))
+
+        pending.sort(key=lambda x: x[0])
+        return pending
+
     async def resolve(self, events: list[Event]) -> ResolvedContent:
         """Resolve L1 + L2 + L3 content dynamically from disk.
 
@@ -173,6 +230,12 @@ class PlanResolver:
             # even if body is empty (signals to the model that a plan exists).
             l2_content = self._resolve_layer2(open_plan_dir)
             layers.append((_LAYER2_HEADER, l2_content))
+
+            # L2-findings: _findings.md — injected alongside L2 when present
+            # and non-empty; omitted when absent or empty.
+            findings_content = self._resolve_findings(open_plan_dir)
+            if findings_content.strip():
+                layers.append((_LAYER2_FINDINGS_HEADER, findings_content))
 
             # L3: current task (lowest-order pending)
             l3_content = self._resolve_layer3(open_plan_dir)
@@ -288,6 +351,24 @@ class PlanResolver:
         text = plan_file.read_text(encoding="utf-8")
         return self._strip_frontmatter(text)
 
+    def _resolve_findings(self, plan_dir: Path) -> str:
+        """Resolve _findings.md: inject body when present and non-empty.
+
+        Returns the raw file body (no frontmatter stripping — _findings.md
+        has no required frontmatter). Returns empty string when absent or
+        whitespace-only.
+        """
+        findings_file = plan_dir / "_findings.md"
+        if not findings_file.is_file():
+            return ""
+
+        try:
+            text = findings_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
+
+        return text
+
     def _resolve_layer3(self, plan_dir: Path) -> str:
         """L3: Load the lowest-order pending task file body.
 
@@ -295,37 +376,37 @@ class PlanResolver:
         filters for ``kind: task`` with ``status: pending``, sorts by ``order``,
         returns the body of the first match.
         """
-        pattern = str(plan_dir / "*.md")
-        paths = sorted(_glob.glob(pattern, recursive=True))
-
         pending_tasks: list[tuple[int, str]] = []  # (order, body_text)
 
-        for path_str in paths:
-            path = Path(path_str)
-            # Skip _plan.md
-            if path.name == "_plan.md":
-                continue
-
+        for order, slug in self._find_pending_tasks(plan_dir):
+            task_file = plan_dir / f"{order:02d}-{slug}.md"
             try:
-                text = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as exc:
-                logger.warning("Cannot read %s: %s — skipping", path, exc)
+                text = task_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
                 continue
-
-            fm = parse_frontmatter(text, file_path=path)
-            if isinstance(fm, TaskFrontmatter) and fm.status == TaskStatus.PENDING:
                 body = self._strip_frontmatter(text)
-                pending_tasks.append((fm.order, body))
+                pending_tasks.append((order, body))
 
         if not pending_tasks:
             return ""
 
-        pending_tasks.sort(key=lambda x: x[0])
         return pending_tasks[0][1]
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_slug_from_filename(filename: str) -> str:
+        """Extract the slug from a task filename like '02-cli-flag.md'.
+
+        Strips the leading NN- prefix and the .md suffix.
+        """
+        # Remove .md suffix
+        name = filename.removesuffix(".md")
+        # Remove leading NN- prefix
+        dash_idx = name.index("-")
+        return name[dash_idx + 1 :]
 
     @staticmethod
     def _strip_frontmatter(text: str) -> str:
