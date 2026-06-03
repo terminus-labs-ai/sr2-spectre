@@ -52,9 +52,15 @@ class ToolConfig(BaseModel):
 
 
 class ModelConfig(BaseModel):
-    """Configuration for a single LLM endpoint."""
+    """Configuration for a single LLM endpoint.
+
+    The params dict is forwarded as **kwargs to the LLM provider
+    (e.g. temperature, top_p, max_tokens). This enables per-agent
+    role-tuned sampling without code changes.
+    """
     model: str
     base_url: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class McpServerConfig(BaseModel):

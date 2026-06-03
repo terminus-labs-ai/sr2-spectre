@@ -52,12 +52,15 @@ class Runtime:
                 client = MCPClient(server_type="http", url=mcp_cfg.url)
             self._mcp_clients.append(client)
 
-        # Build LLM callable
+        # Build LLM callable — forward per-agent sampling params
         model_cfg = config.models["default"]
-        self.llm = LiteLLMCallable(
-            model=model_cfg.model,
-            base_url=model_cfg.base_url,
-        )
+        llm_kwargs: dict = {
+            "model": model_cfg.model,
+            "base_url": model_cfg.base_url,
+        }
+        if model_cfg.params:
+            llm_kwargs.update(model_cfg.params)
+        self.llm = LiteLLMCallable(**llm_kwargs)
 
     async def initialize(self) -> None:
         """Connect all MCP clients and register their tool bridges into the registry."""
