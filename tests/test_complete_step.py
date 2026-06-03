@@ -1,4 +1,4 @@
-"""Tests for CompleteStepTool (obsidian-aal.3).
+"""Tests for CompleteStepTool and post-execute event system (spc-14).
 
 Covers:
 - Successful verify + status flip + findings
@@ -6,8 +6,10 @@ Covers:
 - Task not pending
 - Missing verify command
 - Failed verify
-- Event emission from agent on success
-- No event emission on failure
+- ToolOutput with PostExecuteEvent on success
+- Plain result (no events) on failure
+- Generic event dispatch in Session._execute_tool (no name-magic)
+- ToolOutput unwrapping by executor
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from sr2_spectre.tools.builtins.complete_step import (
     CompleteStepResult,
     CompleteStepTool,
 )
+from sr2_spectre.tools.output import PostExecuteEvent, ToolOutput
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +59,7 @@ def task_file(plans_root: Path) -> Path:
             verify: echo "tests pass"
             title: Setup infrastructure
             ---
-            
+
             Set up the project infrastructure.
             """
         )
@@ -74,14 +77,21 @@ def tool(plans_root: Path) -> CompleteStepTool:
 # ---------------------------------------------------------------------------
 
 
+def _extract_json(result: str | ToolOutput) -> dict:
+    """Helper: unwrap ToolOutput if needed, then parse JSON."""
+    if isinstance(result, ToolOutput):
+        return json.loads(result.result)
+    return json.loads(result)
+
+
 class TestCompleteStepSuccess:
     async def test_successful_completion(self, tool: CompleteStepTool, task_file: Path) -> None:
-        result_str = await tool(
+        result = await tool(
             plan_slug="test-plan",
             task_slug="01-setup",
             findings="none",
         )
-        data = json.loads(result_str)
+        data = _extract_json(result)
 
         assert data["success"] is True
         assert data["plan"] == "test-plan"
@@ -94,7 +104,31 @@ class TestCompleteStepSuccess:
         assert "status: done" in content
         assert "status: pending" not in content
 
-    async def test_findings_appended(self, tool: CompleteStepTool, task_file: Path, plans_root: Path) -> None:
+    async def test_success_returns_tool_output_with_events(
+        self, tool: CompleteStepTool, task_file: Path
+    ) -> None:
+        """Successful complete_step returns ToolOutput with PostExecuteEvent."""
+        result = await tool(
+            plan_slug="test-plan",
+            task_slug="01-setup",
+            findings="none",
+        )
+
+        assert isinstance(result, ToolOutput)
+        assert len(result.events) == 1
+
+        event = result.events[0]
+        assert event.event_name == "plan_step_completed"
+        assert event.phase == "completed"
+        assert event.source_layer == "plan"
+        assert event.data["frame"] == "plan:test-plan/01-setup"
+        assert event.data["plan"] == "test-plan"
+        assert event.data["task"] == "01-setup"
+        assert event.data["order"] == 1
+
+    async def test_findings_appended(
+        self, tool: CompleteStepTool, task_file: Path, plans_root: Path
+    ) -> None:
         await tool(
             plan_slug="test-plan",
             task_slug="01-setup",
@@ -107,7 +141,9 @@ class TestCompleteStepSuccess:
         assert "01-setup" in content
         assert "The --plugin flag is also in tests/conftest.py" in content
 
-    async def test_findings_none_is_noop(self, tool: CompleteStepTool, task_file: Path, plans_root: Path) -> None:
+    async def test_findings_none_is_noop(
+        self, tool: CompleteStepTool, task_file: Path, plans_root: Path
+    ) -> None:
         await tool(
             plan_slug="test-plan",
             task_slug="01-setup",
@@ -117,7 +153,9 @@ class TestCompleteStepSuccess:
         findings_file = plans_root / "test-plan" / "_findings.md"
         assert not findings_file.exists()
 
-    async def test_findings_appended_to_existing(self, tool: CompleteStepTool, task_file: Path, plans_root: Path) -> None:
+    async def test_findings_appended_to_existing(
+        self, tool: CompleteStepTool, task_file: Path, plans_root: Path
+    ) -> None:
         findings_file = plans_root / "test-plan" / "_findings.md"
         findings_file.write_text("### 00-previous\nPrevious finding\n")
 
@@ -164,14 +202,24 @@ class TestCompleteStepSuccess:
 
 class TestCompleteStepFailures:
     async def test_missing_task_file(self, tool: CompleteStepTool) -> None:
-        result_str = await tool(
+        result = await tool(
             plan_slug="test-plan",
             task_slug="99-nonexistent",
             findings="none",
         )
-        data = json.loads(result_str)
+        data = _extract_json(result)
         assert data["success"] is False
         assert "not found" in data["message"].lower()
+
+    async def test_failure_returns_plain_string(self, tool: CompleteStepTool) -> None:
+        """Failed complete_step returns a plain string (no ToolOutput wrapper)."""
+        result = await tool(
+            plan_slug="test-plan",
+            task_slug="99-nonexistent",
+            findings="none",
+        )
+        assert isinstance(result, str)
+        assert not isinstance(result, ToolOutput)
 
     async def test_task_not_pending(self, tool: CompleteStepTool, task_file: Path) -> None:
         task_file.write_text(
@@ -185,21 +233,23 @@ class TestCompleteStepFailures:
                 verify: echo ok
                 title: Already done
                 ---
-                
+
                 Done task.
                 """
             )
         )
-        result_str = await tool(
+        result = await tool(
             plan_slug="test-plan",
             task_slug="01-setup",
             findings="none",
         )
-        data = json.loads(result_str)
+        data = _extract_json(result)
         assert data["success"] is False
         assert "not pending" in data["message"].lower()
 
-    async def test_missing_verify_command(self, tool: CompleteStepTool, plans_root: Path) -> None:
+    async def test_missing_verify_command(
+        self, tool: CompleteStepTool, plans_root: Path
+    ) -> None:
         task = plans_root / "test-plan" / "02-noverify.md"
         task.write_text(
             textwrap.dedent(
@@ -211,19 +261,22 @@ class TestCompleteStepFailures:
                 status: pending
                 title: No verify
                 ---
-                
+
                 Task with no verify command.
                 """
             )
         )
-        result_str = await tool(
+        result = await tool(
             plan_slug="test-plan",
             task_slug="02-noverify",
             findings="none",
         )
-        data = json.loads(result_str)
+        data = _extract_json(result)
         assert data["success"] is False
-        assert "no 'verify:" in data["message"] or "no" in data["message"].lower() and "verify" in data["message"].lower()
+        assert (
+            "no 'verify:" in data["message"]
+            or ("no" in data["message"].lower() and "verify" in data["message"].lower())
+        )
 
     async def test_failed_verify(self, tool: CompleteStepTool, plans_root: Path) -> None:
         task = plans_root / "test-plan" / "03-broken.md"
@@ -238,17 +291,17 @@ class TestCompleteStepFailures:
                 verify: exit 1
                 title: Broken task
                 ---
-                
+
                 This task's verify fails.
                 """
             )
         )
-        result_str = await tool(
+        result = await tool(
             plan_slug="test-plan",
             task_slug="03-broken",
             findings="none",
         )
-        data = json.loads(result_str)
+        data = _extract_json(result)
         assert data["success"] is False
         assert "failed" in data["message"].lower()
 
@@ -269,7 +322,7 @@ class TestCompleteStepToolSchema:
 
 
 # ---------------------------------------------------------------------------
-# Agent event emission tests
+# Status flip spacing variants (spc-13)
 # ---------------------------------------------------------------------------
 
 
@@ -298,12 +351,12 @@ class TestStatusFlipSpacingVariants:
                 """
             )
         )
-        result_str = await tool(
+        result = await tool(
             plan_slug="test-plan",
             task_slug="05-uppercase-val",
             findings="none",
         )
-        data = json.loads(result_str)
+        data = _extract_json(result)
         assert data["success"] is True
 
         from sr2_spectre.planning import parse_file
@@ -315,12 +368,7 @@ class TestStatusFlipSpacingVariants:
     async def test_uppercase_status_key(
         self, tool: CompleteStepTool, plans_root: Path
     ) -> None:
-        """Status: Pending (capital S) must flip correctly.
-
-        Note: the frontmatter parser itself has a key-casing gap
-        (data.get("status") misses "Status"), so we verify the flip
-        by checking raw file content rather than re-parsing.
-        """
+        """Status: Pending (capital S) must flip correctly."""
         task = plans_root / "test-plan" / "06-uppercase.md"
         task.write_text(
             textwrap.dedent(
@@ -338,12 +386,12 @@ class TestStatusFlipSpacingVariants:
                 """
             )
         )
-        result_str = await tool(
+        result = await tool(
             plan_slug="test-plan",
             task_slug="06-uppercase",
             findings="none",
         )
-        data = json.loads(result_str)
+        data = _extract_json(result)
         assert data["success"] is True
 
         # Verify the status line was actually changed in the file.
@@ -354,10 +402,7 @@ class TestStatusFlipSpacingVariants:
     async def test_mixed_spacing_and_case(
         self, tool: CompleteStepTool, plans_root: Path
     ) -> None:
-        """STATUS : Pending (uppercase key, extra space) must flip.
-
-        Note: parser key lookup is case-sensitive, so we verify via raw content.
-        """
+        """STATUS : Pending (uppercase key, extra space) must flip."""
         task = plans_root / "test-plan" / "07-mixed.md"
         task.write_text(
             "---\n"
@@ -371,12 +416,12 @@ class TestStatusFlipSpacingVariants:
             "\n"
             "Task with mixed spacing and case.\n"
         )
-        result_str = await tool(
+        result = await tool(
             plan_slug="test-plan",
             task_slug="07-mixed",
             findings="none",
         )
-        data = json.loads(result_str)
+        data = _extract_json(result)
         assert data["success"] is True
 
         # Verify the status line was actually changed.
@@ -389,9 +434,6 @@ class TestStatusFlipSpacingVariants:
     ) -> None:
         """If the status line can't be matched, complete_step must FAIL
         instead of silently succeeding."""
-        # Create a task where "status" appears but is embedded in a
-        # non-standard way that the YAML parser still picks up (e.g.,
-        # quoted value). The current broken code would no-op here.
         task = plans_root / "test-plan" / "08-quoted.md"
         task.write_text(
             textwrap.dedent(
@@ -409,16 +451,12 @@ class TestStatusFlipSpacingVariants:
                 """
             )
         )
-        # With the fix, this should still work because the YAML key in
-        # the raw text is `status: "pending"` — the replace of
-        # `status: pending` won't match but the new YAML-aware approach
-        # should handle it. If the fix is correct, success + done.
-        result_str = await tool(
+        result = await tool(
             plan_slug="test-plan",
             task_slug="08-quoted",
             findings="none",
         )
-        data = json.loads(result_str)
+        data = _extract_json(result)
         assert data["success"] is True
 
         from sr2_spectre.planning import parse_file
@@ -429,70 +467,204 @@ class TestStatusFlipSpacingVariants:
 
 
 # ---------------------------------------------------------------------------
-# Agent event emission tests
+# Post-execute event system tests (spc-14)
 # ---------------------------------------------------------------------------
 
 
-class TestAgentCompleteStepEvent:
-    async def test_agent_emits_event_on_success(self) -> None:
-        """When complete_step succeeds, the agent emits plan_step_completed."""
-        from sr2_spectre.agent import _is_complete_step_success
+class TestToolOutput:
+    """Tests for the ToolOutput wrapper and PostExecuteEvent."""
 
-        success_result = ToolResultBlock(
-            tool_use_id="tool-1",
-            content=json.dumps({
-                "success": True,
-                "plan": "test-plan",
-                "task": "01-setup",
-                "order": 1,
-                "frame": "plan:test-plan/01-setup",
-                "message": "Task verified and marked complete.",
-            }),
+    def test_tool_output_default_events(self) -> None:
+        """ToolOutput with no events is valid."""
+        output = ToolOutput(result="hello")
+        assert output.result == "hello"
+        assert output.events == []
+
+    def test_tool_output_with_events(self) -> None:
+        output = ToolOutput(
+            result="done",
+            events=[
+                PostExecuteEvent(
+                    event_name="test_event",
+                    data={"key": "value"},
+                ),
+            ],
         )
-        data = _is_complete_step_success(success_result)
-        assert data is not None
-        assert data["plan"] == "test-plan"
-        assert data["task"] == "01-setup"
-        assert data["order"] == 1
-        assert data["frame"] == "plan:test-plan/01-setup"
+        assert len(output.events) == 1
+        assert output.events[0].event_name == "test_event"
 
-    async def test_agent_no_event_on_failure(self) -> None:
-        """When complete_step fails, no event data is extracted."""
-        from sr2_spectre.agent import _is_complete_step_success
+    def test_tool_output_truthiness(self) -> None:
+        """ToolOutput should be truthy even with empty result."""
+        assert bool(ToolOutput(result="")) is True
+        assert bool(ToolOutput(result=None)) is True
 
-        failure_result = ToolResultBlock(
-            tool_use_id="tool-1",
-            content=json.dumps({
-                "success": False,
-                "plan": "test-plan",
-                "task": "01-setup",
-                "order": 1,
-                "frame": "plan:test-plan/01-setup",
-                "message": "Verification FAILED",
-            }),
+    def test_post_execute_event_defaults(self) -> None:
+        event = PostExecuteEvent(event_name="my_event")
+        assert event.phase == "completed"
+        assert event.source_layer == "plan"
+        assert event.data == {}
+
+
+class TestSessionToolOutputDispatch:
+    """Session._execute_tool dispatches PostExecuteEvents generically."""
+
+    async def test_executor_dispatches_tool_output_events(self) -> None:
+        """When a tool returns ToolOutput with events, they are dispatched on the bus."""
+        from sr2_spectre.session import Session
+
+        # Build a minimal session with mocks
+        mock_config = MagicMock()
+        mock_config.agent.tool_result_max_bytes = 1024
+
+        mock_registry = AsyncMock()
+        mock_registry.execute = AsyncMock(
+            return_value=ToolOutput(
+                result="tool_result",
+                events=[
+                    PostExecuteEvent(
+                        event_name="custom_event",
+                        data={"foo": "bar"},
+                        source_layer="test",
+                    ),
+                ],
+            )
         )
-        data = _is_complete_step_success(failure_result)
-        assert data is None
 
-    async def test_agent_no_event_on_non_json(self) -> None:
-        """Non-JSON results don't trigger event emission."""
-        from sr2_spectre.agent import _is_complete_step_success
+        # Create a mock SR2 with a mock bus
+        mock_sr2 = MagicMock()
+        mock_sr2.bus.queue = MagicMock()
 
-        text_result = ToolResultBlock(
-            tool_use_id="tool-1",
-            content="Task completed!",
+        session = Session(
+            frame_id="test-frame",
+            config=mock_config,
+            llm=AsyncMock(),
+            registry=mock_registry,
         )
-        data = _is_complete_step_success(text_result)
-        assert data is None
+        # Replace SR2 instance with our mock
+        session.sr2 = mock_sr2
 
-    async def test_agent_no_event_on_error(self) -> None:
-        """Error results don't trigger event emission."""
-        from sr2_spectre.agent import _is_complete_step_success
-
-        error_result = ToolResultBlock(
-            tool_use_id="tool-1",
-            content="ERROR: Tool not found",
-            is_error=True,
+        block = ToolUseBlock(
+            id="tool-1",
+            name="my_tool",
+            input={},
         )
-        data = _is_complete_step_success(error_result)
-        assert data is None
+        result = await session._execute_tool(block)
+
+        # The ToolOutput should be unwrapped — content is the inner result
+        assert result.content == "tool_result"
+
+        # Event should be queued on the bus
+        assert mock_sr2.bus.queue.call_count == 1
+        queued_event = mock_sr2.bus.queue.call_args[0][0]
+        assert queued_event.name == "custom_event"
+        assert queued_event.data == {"foo": "bar"}
+        assert queued_event.source_layer == "test"
+
+    async def test_executor_plain_result_no_dispatch(self) -> None:
+        """Plain string results (no ToolOutput) produce no bus events."""
+        from sr2_spectre.session import Session
+
+        mock_config = MagicMock()
+        mock_config.agent.tool_result_max_bytes = 1024
+
+        mock_registry = AsyncMock()
+        mock_registry.execute = AsyncMock(return_value="plain_result")
+
+        mock_sr2 = MagicMock()
+        mock_sr2.bus.queue = MagicMock()
+
+        session = Session(
+            frame_id="test-frame",
+            config=mock_config,
+            llm=AsyncMock(),
+            registry=mock_registry,
+        )
+        session.sr2 = mock_sr2
+
+        block = ToolUseBlock(
+            id="tool-1",
+            name="some_tool",
+            input={},
+        )
+        result = await session._execute_tool(block)
+
+        assert result.content == "plain_result"
+        assert mock_sr2.bus.queue.call_count == 0
+
+    async def test_executor_no_name_magic(self) -> None:
+        """The executor does not special-case any tool name.
+
+        This verifies the OCP fix: events come from the tool, not from
+        the executor sniffing block.name.
+        """
+        from sr2_spectre.session import Session
+        import inspect
+
+        source = inspect.getsource(Session._execute_tool)
+        assert 'block.name == "complete_step"' not in source
+        assert "complete_step" not in source
+
+    async def test_executor_multiple_events(self) -> None:
+        """A tool can declare multiple post-execute events."""
+        from sr2_spectre.session import Session
+
+        mock_config = MagicMock()
+        mock_config.agent.tool_result_max_bytes = 1024
+
+        mock_registry = AsyncMock()
+        mock_registry.execute = AsyncMock(
+            return_value=ToolOutput(
+                result="multi",
+                events=[
+                    PostExecuteEvent(event_name="event_a", data={"n": 1}),
+                    PostExecuteEvent(event_name="event_b", data={"n": 2}),
+                ],
+            )
+        )
+
+        mock_sr2 = MagicMock()
+        mock_sr2.bus.queue = MagicMock()
+
+        session = Session(
+            frame_id="test-frame",
+            config=mock_config,
+            llm=AsyncMock(),
+            registry=mock_registry,
+        )
+        session.sr2 = mock_sr2
+
+        block = ToolUseBlock(
+            id="tool-1",
+            name="multi_tool",
+            input={},
+        )
+        await session._execute_tool(block)
+
+        assert mock_sr2.bus.queue.call_count == 2
+        calls = [c[0][0] for c in mock_sr2.bus.queue.call_args_list]
+        assert calls[0].name == "event_a"
+        assert calls[1].name == "event_b"
+
+
+# ---------------------------------------------------------------------------
+# Backward compat: _is_complete_step_success removed from agent.py
+# ---------------------------------------------------------------------------
+
+
+class TestAgentModuleClean:
+    """Verify agent.py no longer has complete_step name-magic."""
+
+    def test_agent_no_complete_step_sniffing(self) -> None:
+        """agent.py should not contain complete_step name-magic."""
+        import inspect
+        from sr2_spectre.agent import Agent
+
+        source = inspect.getsource(Agent)
+        assert "complete_step" not in source
+        assert "_is_complete_step_success" not in source
+
+    def test_agent_no_json_import(self) -> None:
+        """agent.py no longer imports json for result parsing."""
+        from sr2_spectre.agent import __dict__ as agent_dict
+        # The module shouldn't have _is_complete_step_success
+        assert "_is_complete_step_success" not in dir(__import__("sr2_spectre.agent", fromlist=[""]))

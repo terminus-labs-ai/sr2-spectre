@@ -32,14 +32,11 @@ spectre catches SR2's ToolLoopLimitError and stops.
 
 from __future__ import annotations
 
-import json as _json
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator
 
 if TYPE_CHECKING:
     from sr2.pipeline.tracing import Tracer
 
-from sr2.pipeline.events import Event, EventPhase
-from sr2.models import ToolResultBlock
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.core import RunContext, TurnResult
 from sr2_spectre.events import AgentEvent
@@ -51,36 +48,6 @@ from sr2_spectre.runtime import Runtime
 
 # session_id → frame_id mapping: Agent's session_id *is* the frame_id
 # for the single-frame path.
-
-
-# ---------------------------------------------------------------------------
-# complete_step event emission (used by Session._execute_tool and tests)
-# ---------------------------------------------------------------------------
-
-def _is_complete_step_success(result_block: ToolResultBlock) -> dict[str, Any] | None:
-    """Check if a tool result is a successful complete_step output.
-
-    Returns the parsed event data dict on success, or None.
-    """
-    content = result_block.content
-    if isinstance(content, list):
-        # Multi-block result — concatenate texts
-        texts = [b.text for b in content if hasattr(b, "text")]
-        content = " ".join(texts)
-    if not isinstance(content, str):
-        return None
-    try:
-        data = _json.loads(content)
-    except (_json.JSONDecodeError, ValueError):
-        return None
-    if data.get("success") is True:
-        return {
-            "frame": data.get("frame", ""),
-            "plan": data.get("plan", ""),
-            "task": data.get("task", ""),
-            "order": data.get("order", 0),
-        }
-    return None
 
 
 class Agent:

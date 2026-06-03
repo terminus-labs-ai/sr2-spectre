@@ -24,6 +24,7 @@ from typing import Any
 import yaml
 
 from sr2_spectre.planning import TaskFrontmatter, TaskStatus, parse_file, split_frontmatter
+from sr2_spectre.tools.output import PostExecuteEvent, ToolOutput
 
 logger = logging.getLogger(__name__)
 
@@ -112,10 +113,33 @@ class CompleteStepTool:
         plan_slug: str,
         task_slug: str,
         findings: str,
-    ) -> str:
-        """Execute the complete-step flow. Returns a JSON string."""
+    ) -> str | ToolOutput:
+        """Execute the complete-step flow.
+
+        On success, returns a ``ToolOutput`` with a ``plan_step_completed``
+        post-execute event attached. On failure, returns a plain JSON string
+        (no events to emit).
+        """
         result = await self._complete(plan_slug, task_slug, findings)
-        return self._serialize(result)
+        serialized = self._serialize(result)
+        if result.success:
+            return ToolOutput(
+                result=serialized,
+                events=[
+                    PostExecuteEvent(
+                        event_name="plan_step_completed",
+                        phase="completed",
+                        source_layer="plan",
+                        data={
+                            "frame": result.frame,
+                            "plan": result.plan,
+                            "task": result.task,
+                            "order": result.order,
+                        },
+                    ),
+                ],
+            )
+        return serialized
 
     # ------------------------------------------------------------------
     # Internal

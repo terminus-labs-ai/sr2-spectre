@@ -8,7 +8,6 @@ tool registry and LLM callable but maintains independent conversation state.
 from __future__ import annotations
 
 import asyncio
-import json as _json
 import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -31,6 +30,7 @@ from sr2_spectre.events import (
     AgentToolResult,
     AgentToolStart,
 )
+from sr2_spectre.tools.output import ToolOutput
 from sr2_spectre.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -87,8 +87,7 @@ class Session:
         """SR2 tool_executor callback. Executes a tool via the shared registry.
 
         Truncates oversized results before they enter context.
-        Special-cases ``complete_step``: on success, emits a
-        ``plan_step_completed`` event on the SR2 bus for step-compaction.
+        Dispatches post-execute bus events declared in ``ToolOutput`` wrappers.
         """
         max_bytes = self.config.agent.tool_result_max_bytes
 
@@ -104,48 +103,36 @@ class Session:
 
         try:
             out = await self._registry.execute(block.name, block.input)
+
+            # Check for post-execute events (generic dispatch — no name-magic)
+            events_to_dispatch: list[Any] = []
+            if isinstance(out, ToolOutput):
+                events_to_dispatch = out.events
+                out = out.result
+
             content = _truncate(str(out), block.name)
             result = ToolResultBlock(tool_use_id=block.id, content=content)
 
-            # Emit plan_step_completed event on successful complete_step
-            if block.name == "complete_step":
-                event_data = self._is_complete_step_success(result)
-                if event_data is not None:
-                    self.sr2.bus.queue(
-                        Event(
-                            name="plan_step_completed",
-                            phase=EventPhase.COMPLETED,
-                            source_layer="plan",
-                            data=event_data,
-                        )
+            # Dispatch any post-execute events declared by the tool
+            for pe_event in events_to_dispatch:
+                self.sr2.bus.queue(
+                    Event(
+                        name=pe_event.event_name,
+                        phase=getattr(
+                            EventPhase,
+                            pe_event.phase.upper(),
+                            EventPhase.COMPLETED,
+                        ),
+                        source_layer=pe_event.source_layer,
+                        data=pe_event.data,
                     )
+                )
 
             return result
         except Exception as exc:
             logger.warning("Tool %r failed: %s", block.name, exc)
             content = _truncate(f"ERROR: {exc}", block.name)
             return ToolResultBlock(tool_use_id=block.id, content=content, is_error=True)
-
-    def _is_complete_step_success(self, result_block: ToolResultBlock) -> dict[str, Any] | None:
-        """Check if a tool result is a successful complete_step output."""
-        content = result_block.content
-        if isinstance(content, list):
-            texts = [b.text for b in content if hasattr(b, "text")]
-            content = " ".join(texts)
-        if not isinstance(content, str):
-            return None
-        try:
-            data = _json.loads(content)
-        except (_json.JSONDecodeError, ValueError):
-            return None
-        if data.get("success") is True:
-            return {
-                "frame": data.get("frame", ""),
-                "plan": data.get("plan", ""),
-                "task": data.get("task", ""),
-                "order": data.get("order", 0),
-            }
-        return None
 
     async def stream_message(self, text: str) -> AsyncIterator[AgentEvent]:
         """Stream agent events for a user message, serialized by _lock."""
@@ -169,7 +156,9 @@ class Session:
                         for tu in ev.tool_uses:
                             total_tool_calls += 1
                             tool_id_to_name[tu.id] = tu.name
-                            yield AgentToolStart(tool_id=tu.id, name=tu.name, input=tu.input)
+                            yield AgentToolStart(
+                                tool_id=tu.id, name=tu.name, input=tu.input
+                            )
                     elif ev.type == "tool_result_received" and ev.tool_results:
                         for tr in ev.tool_results:
                             yield AgentToolResult(
@@ -202,4 +191,6 @@ class Session:
                 text_parts.append(ev.text)
             elif isinstance(ev, AgentDone):
                 total = ev.tool_calls_executed
-        return TurnResult(text="".join(text_parts), tool_calls_executed=total)
+        return TurnResult(
+            text="".join(text_parts), tool_calls_executed=total
+        )
