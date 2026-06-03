@@ -43,6 +43,13 @@ class Runtime:
         for tool_cfg in config.agent.tools:
             self.registry.register_from_class_path(tool_cfg.class_path, tool_cfg.config)
 
+        # Auto-inject complete_step when a plan resolver is configured.
+        # complete_step + plan resolver are one feature unit: if the pipeline
+        # declares a plan resolver, the agent needs complete_step to mark
+        # tasks done. Scanning pipeline.layers for type=='plan' gives us the
+        # resolver's plans_root so there's a single source of truth.
+        self._auto_inject_complete_step(config)
+
         # MCP clients — one per mcp_servers entry; connected lazily via initialize()
         self._mcp_clients: list[MCPClient] = []
         for mcp_cfg in config.agent.mcp_servers:
@@ -99,3 +106,67 @@ class Runtime:
         """Close all MCP client transports. Safe to call even if initialize() was never called."""
         for client in self._mcp_clients:
             await client.close()
+
+    # ------------------------------------------------------------------
+    # Auto-injection helpers
+    # ------------------------------------------------------------------
+
+    def _auto_inject_complete_step(self, config: SpectreConfig) -> None:
+        """Auto-register complete_step if a plan resolver is in the pipeline.
+
+        Scans all pipeline layers for a resolver with type=='plan'. If found,
+        extracts the plans_root from the resolver's config and registers
+        CompleteStepTool with that plans_root.
+
+        Skips registration if complete_step is already in the registry
+        (explicitly declared in agent.tools).
+        """
+        if "complete_step" in self.registry:
+            # Already registered explicitly — don't duplicate.
+            return
+
+        plans_root = self._find_plans_root(config)
+        # _find_plans_root returns None when no plan resolver exists.
+        # When a plan resolver exists but plans_root isn't set explicitly,
+        # we pass None to CompleteStepTool so it uses its own default (~/.sr2/plans).
+
+        has_plan_resolver = False
+        for layer in config.pipeline.layers:
+            for resolver in layer.resolvers:
+                if resolver.type == "plan":
+                    has_plan_resolver = True
+                    break
+            if has_plan_resolver:
+                break
+
+        if not has_plan_resolver:
+            return
+
+        # Import locally to avoid circular dependency at module level.
+        from sr2_spectre.tools.builtins.complete_step import CompleteStepTool
+
+        self.registry.register(
+            name=CompleteStepTool.name,
+            description=CompleteStepTool.description,
+            input_schema=CompleteStepTool.input_schema,
+            fn=CompleteStepTool(plans_root=plans_root).__call__,
+        )
+        logger.info(
+            "Auto-injected complete_step tool (plans_root=%s)",
+            plans_root or "~/.sr2/plans (default)",
+        )
+
+    @staticmethod
+    def _find_plans_root(config: SpectreConfig) -> str | None:
+        """Scan pipeline layers for a plan resolver and return its plans_root.
+
+        Walks pipeline.layers[*].resolvers[*] looking for type=='plan'.
+        Returns the plans_root from the first match's config dict, or None
+        if no plan resolver is found or plans_root isn't explicitly set.
+        """
+        layers = config.pipeline.layers
+        for layer in layers:
+            for resolver in layer.resolvers:
+                if resolver.type == "plan":
+                    return resolver.config.get("plans_root")
+        return None
