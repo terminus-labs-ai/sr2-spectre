@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import glob as _glob
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -68,6 +69,9 @@ _LAYER_PRIORITY: dict[str, int] = {
     _PLANNING_HEADER: 3,  # same priority as L1 — trigger is disposable
 }
 
+# Sentinel value for dynamic project derivation at resolve time.
+_AUTO_PROJECT = "__auto__"
+
 
 # ---------------------------------------------------------------------------
 # PlanResolver
@@ -84,10 +88,12 @@ class PlanResolver:
         Default: ``~/.sr2/plans``
     knowledge_root : str
         Directory holding project-knowledge markdown files.
-        Default: ``~/.sr2/knowledge/<project>`` (expanded at init).
+        Default: ``~/.sr2/knowledge/<project>`` (expanded at init, or
+        dynamically when ``project`` is ``__auto__``).
     project : str
         Active project name; used to filter L1 knowledge files.
-        **Required.**
+        **Required.** Set to ``__auto__`` to derive dynamically per-turn
+        from ``SR2_PROJECT`` env var or cwd-based ``.git`` discovery.
     max_tokens : int | None
         Optional token budget for the combined injection.
     planning_guide_path : str | None
@@ -106,12 +112,22 @@ class PlanResolver:
             config.subscriptions, PHASE_MAP, [_DEFAULT_SUBSCRIPTION]
         )
 
-        # Required: project name
-        self._project: str = config.config.get("project")
-        if not self._project:
+        # Required: project name (or __auto__ sentinel)
+        raw_project: str | None = config.config.get("project")
+        if not raw_project:
             raise ValueError(
-                "PlanResolver requires config['project'] to be set."
+                "PlanResolver requires config['project'] to be set. "
+                "Use a literal project name (e.g. 'sr2-spectre') or "
+                "'__auto__' for dynamic per-turn derivation."
             )
+
+        # Track whether project is auto-derived
+        self._is_auto: bool = raw_project == _AUTO_PROJECT
+
+        # For explicit (non-auto) projects, store the value directly.
+        # For __auto__, _resolve_project() is called at resolve time.
+        if not self._is_auto:
+            self._project: str = raw_project
 
         # Optional: roots with defaults
         plans_root_raw: str = config.config.get(
@@ -119,11 +135,23 @@ class PlanResolver:
         )
         self._plans_root = Path(plans_root_raw).expanduser().resolve()
 
-        knowledge_root_raw: str = config.config.get(
-            "knowledge_root",
-            str(Path.home() / ".sr2" / "knowledge" / self._project),
-        )
-        self._knowledge_root = Path(knowledge_root_raw).expanduser().resolve()
+        # knowledge_root: if explicitly provided, store resolved path.
+        # If not provided (default), we need to re-resolve each turn when __auto__.
+        self._knowledge_root_explicit: bool = "knowledge_root" in config.config
+        if self._knowledge_root_explicit:
+            knowledge_root_raw: str = config.config.get(
+                "knowledge_root",
+                str(Path.home() / ".sr2" / "knowledge" / raw_project),
+            )
+            self._knowledge_root = Path(knowledge_root_raw).expanduser().resolve()
+        else:
+            # Default knowledge_root — will be resolved dynamically when __auto__.
+            # For explicit projects, resolve now.
+            if not self._is_auto:
+                self._knowledge_root = Path.home().expanduser() / ".sr2" / "knowledge" / raw_project
+            else:
+                # Placeholder — resolved in _resolve_knowledge_root().
+                self._knowledge_root = Path.home() / ".sr2" / "knowledge" / raw_project
 
         self._max_tokens: int | None = config.config.get("max_tokens")
 
@@ -131,6 +159,68 @@ class PlanResolver:
         self._planning_guide_path: str | None = config.config.get(
             "planning_guide_path"
         )
+
+    # ------------------------------------------------------------------
+    # Dynamic project resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_project(self) -> str:
+        """Resolve the active project name.
+
+        If ``project`` was set to ``__auto__``, derive dynamically:
+        1. ``SR2_PROJECT`` env var (highest priority).
+        2. Walk up from ``os.getcwd()`` looking for ``.git`` — use the
+           containing directory's name.
+        3. Fallback: use ``os.getcwd()`` basename.
+
+        Returns the project name string.
+        """
+        if not self._is_auto:
+            return self._project
+
+        # 1. Env var
+        env_project = os.environ.get("SR2_PROJECT")
+        if env_project:
+            return env_project
+
+        # 2. Walk up from cwd looking for .git
+        try:
+            cwd = Path.cwd().resolve()
+        except OSError:
+            cwd = Path("/tmp")
+
+        current = cwd
+        while True:
+            git_dir = current / ".git"
+            if git_dir.is_dir() or git_dir.is_file():
+                return current.name
+            parent = current.parent
+            if parent == current:
+                # Reached filesystem root without finding .git
+                break
+            current = parent
+
+        # 3. Fallback: use cwd basename
+        logger.warning(
+            "PlanResolver: could not find .git walking up from %s — "
+            "using cwd name '%s' as project fallback.",
+            cwd,
+            cwd.name,
+        )
+        return cwd.name
+
+    def _resolve_knowledge_root(self) -> Path:
+        """Resolve the knowledge_root path.
+
+        If knowledge_root was explicitly configured in YAML, return the
+        pre-resolved path (unchanged). If using the default and project is
+        ``__auto__``, re-derive the path from the resolved project name.
+        """
+        if not self._is_auto or self._knowledge_root_explicit:
+            return self._knowledge_root
+
+        project = self._resolve_project()
+        return Path.home().expanduser() / ".sr2" / "knowledge" / project
 
     # ------------------------------------------------------------------
     # Public API
@@ -204,6 +294,9 @@ class PlanResolver:
         """
         self.execution_count += 1
 
+        # Resolve the active project (dynamic when __auto__)
+        project = self._resolve_project()
+
         layers: list[tuple[str, str]] = []  # (layer_header, content)
 
         # Resolve the single open plan (or none) — called once, used for both
@@ -221,7 +314,7 @@ class PlanResolver:
             layers.append((_PLANNING_HEADER, trigger))
 
         # L1: project knowledge
-        l1_content = self._resolve_layer1()
+        l1_content = self._resolve_layer1(project)
         if l1_content:
             layers.append((_LAYER1_HEADER, l1_content))
 
@@ -268,18 +361,26 @@ class PlanResolver:
     # Layer resolution helpers
     # ------------------------------------------------------------------
 
-    def _resolve_layer1(self) -> str:
+    def _resolve_layer1(self, project: str | None = None) -> str:
         """L1: Load all project-knowledge files matching the active project.
 
         Globs ``*.md`` under ``knowledge_root``, parses frontmatter, filters
         by ``kind: project-knowledge`` with matching ``project`` field.
         Returns concatenated content of matching files (body only, frontmatter
         stripped).
+
+        If *project* is provided, use it; otherwise resolve dynamically
+        (supports ``__auto__`` sentinel for per-turn derivation).
         """
-        if not self._knowledge_root.is_dir():
+        if project is None:
+            project = self._resolve_project()
+
+        knowledge_root = self._resolve_knowledge_root()
+
+        if not knowledge_root.is_dir():
             return ""
 
-        pattern = str(self._knowledge_root / "*.md")
+        pattern = str(knowledge_root / "*.md")
         paths = sorted(_glob.glob(pattern, recursive=True))
 
         parts: list[str] = []
@@ -292,7 +393,7 @@ class PlanResolver:
                 continue
 
             fm = parse_frontmatter(text, file_path=path)
-            if isinstance(fm, KnowledgeFrontmatter) and fm.project == self._project:
+            if isinstance(fm, KnowledgeFrontmatter) and fm.project == project:
                 body = self._strip_frontmatter(text)
                 if body.strip():
                     parts.append(body)
