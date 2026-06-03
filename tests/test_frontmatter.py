@@ -19,6 +19,11 @@ from pathlib import Path
 from textwrap import dedent
 
 from sr2_spectre.planning.frontmatter import (
+    _FRONTMATTER_PARSERS,
+    _build_frontmatter,
+    _parse_knowledge,
+    _parse_plan,
+    _parse_task,
     extract_raw_frontmatter,
     parse_file,
     parse_frontmatter,
@@ -583,3 +588,96 @@ class TestPyYAMLReuse:
             "__future__", "logging", "pathlib", "typing"
         )]
         assert external == ["yaml"], f"Unexpected external deps: {external}"
+
+
+# =========================================================================
+# 10. OCP dispatch — _FRONTMATTER_PARSERS & _build_frontmatter
+# =========================================================================
+
+
+class TestFrontmatterDispatch:
+    """Tests for the kind→parser dispatch table (spc-16)."""
+
+    def test_parser_registry_contains_all_kinds(self):
+        """The dispatch table covers every recognized kind."""
+        assert set(_FRONTMATTER_PARSERS.keys()) == RECOGNIZED_KINDS
+
+    def test_task_parser_registered(self):
+        assert _FRONTMATTER_PARSERS["task"] is _parse_task
+
+    def test_plan_parser_registered(self):
+        assert _FRONTMATTER_PARSERS["plan"] is _parse_plan
+
+    def test_knowledge_parser_registered(self):
+        assert _FRONTMATTER_PARSERS["project-knowledge"] is _parse_knowledge
+
+    def test_build_frontmatter_delegates_to_parser(self):
+        """_build_frontmatter dispatches through the table, not if/elif."""
+        from sr2_spectre.planning.models import TaskFrontmatter
+        result = _build_frontmatter(
+            TaskFrontmatter,
+            {"plan": "test", "order": 1, "status": "pending"},
+            "task",
+            "label",
+        )
+        assert isinstance(result, TaskFrontmatter)
+        assert result.plan == "test"
+        assert result.order == 1
+
+    def test_build_frontmatter_unknown_kind_raises(self):
+        """Unknown kind raises ValueError (shouldn't reach here in normal flow
+        because parse_frontmatter filters via RECOGNIZED_KINDS first)."""
+        from sr2_spectre.planning.models import TaskFrontmatter
+        with pytest.raises(ValueError, match="Unknown kind"):
+            _build_frontmatter(
+                TaskFrontmatter,
+                {},
+                "nonexistent-kind",
+                "label",
+            )
+
+    def test_build_frontmatter_plan_kind(self):
+        from sr2_spectre.planning.models import PlanFrontmatter
+        result = _build_frontmatter(
+            PlanFrontmatter,
+            {"slug": "my-plan", "status": "open", "goal": "test"},
+            "plan",
+            "label",
+        )
+        assert isinstance(result, PlanFrontmatter)
+        assert result.slug == "my-plan"
+
+    def test_build_frontmatter_knowledge_kind(self):
+        from sr2_spectre.planning.models import KnowledgeFrontmatter
+        result = _build_frontmatter(
+            KnowledgeFrontmatter,
+            {"project": "my-project"},
+            "project-knowledge",
+            "label",
+        )
+        assert isinstance(result, KnowledgeFrontmatter)
+        assert result.project == "my-project"
+
+    def test_no_if_elif_chain_in_build_frontmatter(self):
+        """Verify _build_frontmatter source contains no if/elif kind dispatch.
+
+        This is an architectural test — if someone reverts to an if/elif
+        chain, this test will fail and call it out.
+        """
+        import inspect
+        source = inspect.getsource(_build_frontmatter)
+        # The function should use _FRONTMATTER_PARSERS, not kind == "..."
+        assert "_FRONTMATTER_PARSERS" in source, "Should use dispatch table"
+        # Check body lines (skip docstring) for elif kind == pattern
+        lines = source.split("\n")
+        in_docstring = False
+        for line in lines:
+            stripped = line.strip()
+            if '"""' in stripped:
+                in_docstring = not in_docstring
+                continue
+            if in_docstring:
+                continue
+            # In executable code, there should be no "elif kind ==" pattern
+            assert "elif" not in stripped, f"Should not have if/elif kind chain: {stripped}"
+            assert 'kind ==' not in stripped, f"Should not have if/elif kind chain: {stripped}"

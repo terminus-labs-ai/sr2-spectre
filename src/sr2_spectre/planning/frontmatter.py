@@ -155,25 +155,7 @@ def parse_frontmatter(
         return None
 
 
-def _build_frontmatter(
-    cls: type[PlanFileFrontmatter],
-    data: dict,
-    kind: str,
-    label: str,
-) -> PlanFileFrontmatter:
-    """Instantiate the correct frontmatter dataclass from parsed YAML data.
-
-    Normalizes enum fields and provides defaults for optional fields.
-    """
-    if kind == "task":
-        return _parse_task(data, label)
-    elif kind == "plan":
-        return _parse_plan(data, label)
-    elif kind == "project-knowledge":
-        return _parse_knowledge(data, label)
-    else:
-        raise ValueError(f"Unknown kind: {kind}")
-
+# --- Kind-specific parse functions ---
 
 def _parse_task(data: dict, label: str) -> TaskFrontmatter:
     """Parse task frontmatter with validation."""
@@ -264,6 +246,35 @@ def _parse_knowledge(data: dict, label: str) -> KnowledgeFrontmatter:
         kind="project-knowledge",
         project=project,
     )
+
+
+# --- Dispatch table (OCP-compliant) ---
+
+# Mapping from kind string to the corresponding parse function.
+# Adding a new kind requires adding an entry here and a new _parse_X function —
+# no if/elif chain to modify in _build_frontmatter.
+_FRONTMATTER_PARSERS: dict[str, callable] = {
+    "task": _parse_task,
+    "plan": _parse_plan,
+    "project-knowledge": _parse_knowledge,
+}
+
+
+def _build_frontmatter(
+    cls: type[PlanFileFrontmatter],
+    data: dict,
+    kind: str,
+    label: str,
+) -> PlanFileFrontmatter:
+    """Instantiate the correct frontmatter dataclass from parsed YAML data.
+
+    Dispatches through ``_FRONTMATTER_PARSERS`` so adding a new kind
+    requires only a dict entry — no if/elif chain (OCP).
+    """
+    parser = _FRONTMATTER_PARSERS.get(kind)
+    if parser is None:
+        raise ValueError(f"Unknown kind: {kind}")
+    return parser(data, label)
 
 
 def parse_file(
