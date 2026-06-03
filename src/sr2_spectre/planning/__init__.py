@@ -17,6 +17,7 @@ from sr2_spectre.planning.frontmatter import (
     extract_raw_frontmatter,
     parse_file,
     parse_frontmatter,
+    split_frontmatter,
 )
 from sr2_spectre.planning.models import (
     KnowledgeFrontmatter,
@@ -36,6 +37,7 @@ __all__ = [
     "extract_raw_frontmatter",
     "parse_file",
     "parse_frontmatter",
+    "split_frontmatter",
     "KnowledgeFrontmatter",
     "PlanFileFrontmatter",
     "PlanFrontmatter",

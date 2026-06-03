@@ -22,6 +22,7 @@ from sr2_spectre.planning.frontmatter import (
     extract_raw_frontmatter,
     parse_file,
     parse_frontmatter,
+    split_frontmatter,
 )
 from sr2_spectre.planning.models import (
     KnowledgeFrontmatter,
@@ -82,6 +83,136 @@ class TestExtractRawFrontmatter:
         raw = extract_raw_frontmatter(text)
         assert raw is not None
         assert "kind: task" in raw
+
+
+# =========================================================================
+# 1b. split_frontmatter (shared boundary scanner)
+# =========================================================================
+
+
+class TestSplitFrontmatter:
+    """Tests for the canonical frontmatter boundary scanner.
+
+    This is the shared helper that extract_raw_frontmatter, resolver, and
+    complete_step all delegate to.
+    """
+
+    def test_simple_block(self):
+        """Returns (frontmatter_block, body) for a standard file."""
+        text = "---\nkind: task\norder: 1\n---\n# Body\n"
+        result = split_frontmatter(text)
+        assert result is not None
+        fm_block, body = result
+        assert fm_block == "---\nkind: task\norder: 1\n---"
+        # trailing \n stripped by internal strip(); body starts with \n (paragraph break)
+        assert body == "\n# Body"
+
+    def test_no_frontmatter(self):
+        """Text without --- prefix returns None."""
+        text = "# Just a heading\n\nSome body text.\n"
+        assert split_frontmatter(text) is None
+
+    def test_single_dash_no_close(self):
+        """Opening --- but no closing --- returns None."""
+        text = "---\nkind: task\norder: 1\n# No close\n"
+        assert split_frontmatter(text) is None
+
+    def test_empty_block(self):
+        """Empty frontmatter (--- followed immediately by ---) still splits.
+
+        split_frontmatter is a low-level boundary scanner — it returns the
+        split even when the YAML block is empty.  extract_raw_frontmatter
+        (the consumer) treats an empty block as None.
+        """
+        text = "---\n---\n# Body\n"
+        result = split_frontmatter(text)
+        assert result is not None
+        fm_block, body = result
+        assert fm_block == "---\n---"
+        assert body == "\n# Body"
+
+    def test_whitespace_before_block(self):
+        """Leading whitespace is handled — frontmatter still found."""
+        text = "\n\n---\nkind: plan\n---\n# Body\n"
+        result = split_frontmatter(text)
+        assert result is not None
+        fm_block, body = result
+        assert fm_block == "---\nkind: plan\n---"
+        assert body == "\n# Body"
+
+    def test_multiline_yaml(self):
+        """Multi-line YAML values preserved in frontmatter block."""
+        text = "---\nkind: task\nverify: |\n  uv run pytest\n  uv run mypy\n---\n# Body\n"
+        result = split_frontmatter(text)
+        assert result is not None
+        fm_block, body = result
+        assert "uv run pytest" in fm_block
+        assert "uv run mypy" in fm_block
+
+    def test_body_with_horizontal_rules(self):
+        """Body contains --- after frontmatter closes — only first block used."""
+        text = "---\nkind: task\n---\n# Body\n\n---\n\nMore text\n"
+        result = split_frontmatter(text)
+        assert result is not None
+        fm_block, body = result
+        assert fm_block == "---\nkind: task\n---"
+        assert "# Body" in body
+        assert "More text" in body
+
+    def test_fm_block_includes_delimiters(self):
+        """Frontmatter block includes opening and closing --- delimiters."""
+        text = "---\nkind: task\n---\n# Body\n"
+        fm_block, _body = split_frontmatter(text)
+        assert fm_block.startswith("---\n")
+        assert fm_block.endswith("---")
+
+    def test_reconstruct_original(self):
+        """fm_block + body reconstructs the stripped original text."""
+        text = "---\nkind: task\norder: 1\n---\n# Body\n"
+        fm_block, body = split_frontmatter(text)
+        assert fm_block + body == text.strip()
+
+    def test_multiline_yaml_roundtrip(self):
+        """Round-trip works for complex YAML with block scalars."""
+        text = "---\nkind: task\nverify: |\n  pytest tests/\n---\n## Task\n\nDo the thing.\n"
+        fm_block, body = split_frontmatter(text)
+        assert fm_block + body == text.strip()
+        assert fm_block == "---\nkind: task\nverify: |\n  pytest tests/\n---"
+        assert body == "\n## Task\n\nDo the thing."
+
+    def test_no_body_after_closing(self):
+        """File ends right after closing --- with newline."""
+        text = "---\nkind: plan\n---\n"
+        result = split_frontmatter(text)
+        assert result is not None
+        fm_block, body = result
+        assert fm_block == "---\nkind: plan\n---"
+        assert body == ""
+
+    def test_body_preserves_leading_newline(self):
+        """If there's a blank line after closing ---, body has the paragraph break."""
+        text = "---\nkind: task\n---\n\n# Body starts after blank line\n"
+        fm_block, body = split_frontmatter(text)
+        assert body.startswith("\n\n")
+
+    def test_empty_string(self):
+        """Empty string returns None."""
+        assert split_frontmatter("") is None
+
+    def test_only_dashes(self):
+        """Just --- with no body returns None."""
+        assert split_frontmatter("---") is None
+
+    def test_status_in_fm_block(self):
+        """Status field appears in fm_block (for _flip_status use case)."""
+        text = "---\nkind: task\nstatus: pending\n---\n# Body\n"
+        fm_block, _body = split_frontmatter(text)
+        assert "status: pending" in fm_block
+
+    def test_exported_from_planning_package(self):
+        """split_frontmatter is importable from the planning package."""
+        from sr2_spectre.planning import split_frontmatter as pkg_split
+        assert pkg_split is split_frontmatter
 
 
 # =========================================================================

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sr2_spectre.planning import TaskFrontmatter, TaskStatus, parse_file
+from sr2_spectre.planning import TaskFrontmatter, TaskStatus, parse_file, split_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -223,21 +223,18 @@ class CompleteStepTool:
         mention in the task body can never be corrupted.
         """
         text = task_file.read_text(encoding="utf-8")
-        if not text.startswith("---"):
-            logger.warning("No leading frontmatter in %s — status not flipped", task_file.name)
-            return
-        body_start = text.find("\n---", 3)
-        if body_start == -1:
-            logger.warning("Unterminated frontmatter in %s — status not flipped", task_file.name)
+        result = split_frontmatter(text)
+        if result is None:
+            logger.warning("No valid frontmatter in %s — status not flipped", task_file.name)
             return
 
-        frontmatter, body = text[:body_start], text[body_start:]
-        new_frontmatter = frontmatter.replace(
+        fm_block, body = result
+        new_fm_block = fm_block.replace(
             f"status: {TaskStatus.PENDING.value}",
             f"status: {TaskStatus.DONE.value}",
             1,
         )
-        task_file.write_text(new_frontmatter + body, encoding="utf-8")
+        task_file.write_text(new_fm_block + body, encoding="utf-8")
         logger.info("Flipped %s status to done", task_file.name)
 
     @staticmethod

@@ -27,7 +27,11 @@ from sr2.pipeline.models import ResolvedContent
 from sr2.pipeline.token_counting import CHARS_PER_TOKEN
 from sr2.pipeline.utils import PHASE_MAP, build_subscriptions
 
-from sr2_spectre.planning.frontmatter import parse_file, parse_frontmatter
+from sr2_spectre.planning.frontmatter import (
+    parse_file,
+    parse_frontmatter,
+    split_frontmatter,
+)
 from sr2_spectre.planning.models import (
     KnowledgeFrontmatter,
     PlanFrontmatter,
@@ -516,16 +520,12 @@ class PlanResolver:
         Returns the body after the closing ``---``. If no frontmatter is
         found, returns the original text.
         """
-        stripped = text.strip()
-        if not stripped.startswith("---"):
+        result = split_frontmatter(text)
+        if result is None:
             return text
 
-        rest = stripped[3:]  # skip opening ---
-        try:
-            idx = rest.index("\n---")
-            return rest[idx + 4:]  # skip "\n---" + leading newline
-        except ValueError:
-            return text
+        _fm_block, body = result
+        return body
 
     def _enforce_budget(
         self,

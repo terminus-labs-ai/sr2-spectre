@@ -31,26 +31,68 @@ from sr2_spectre.planning.models import (
 logger = logging.getLogger(__name__)
 
 
-def extract_raw_frontmatter(text: str) -> Optional[str]:
-    """Extract the raw YAML string between the first `---` and next `---`.
+def split_frontmatter(text: str) -> Optional[tuple[str, str]]:
+    """Split text into (frontmatter_block, body) at the frontmatter boundary.
 
-    Returns None if no valid frontmatter block is found.
+    Scans for a YAML frontmatter block delimited by opening ``---`` and
+    closing ``---`` (on their own line).  Handles leading whitespace
+    gracefully by stripping before detection.
+
+    Returns:
+        ``(frontmatter_block, body)`` where *frontmatter_block* includes the
+        opening ``---``, YAML content, closing ``---``, and the trailing
+        newline after the closing delimiter.  *body* is everything after
+        that newline.  Returns ``None`` if no valid frontmatter block is
+        found.
+
+    Examples:
+        >>> split_frontmatter("---\\nkind: task\\n---\\n# Body\\n")
+        ('---\\nkind: task\\n---\\n', '# Body\\n')
+
+        >>> split_frontmatter("# No frontmatter\\n") is None
+        True
     """
     stripped = text.strip()
     if not stripped.startswith("---"):
         return None
 
-    # Find the closing delimiter. Search after the opening `---`.
     rest = stripped[3:]  # skip opening ---
 
     try:
         idx = rest.index("\n---")
     except ValueError:
-        # No closing delimiter found
         return None
 
-    # Extract content between delimiters.
-    raw = rest[:idx].strip()
+    # frontmatter_block: opening --- through closing --- (inclusive) + trailing \n
+    # idx is position of "\n---" in rest (rest = stripped[3:]).
+    # fm_block in stripped: positions 0..3+idx+3 = idx+6 (covers "---" + YAML content + "\n---")
+    fm_end = 3 + idx + 4  # 3 (opening ---) + idx (to \n of closing) + 4 ("\n---")
+    fm_block = stripped[:fm_end]
+    body = stripped[fm_end:]
+
+    # If body starts with \n after the closing ---, that's the paragraph break.
+    # We return the body as-is (with or without that leading newline).
+    return fm_block, body
+
+
+def extract_raw_frontmatter(text: str) -> Optional[str]:
+    """Extract the raw YAML string between the first `---` and next `---`.
+
+    Returns None if no valid frontmatter block is found.
+
+    .. note::
+       This is a thin wrapper around :func:`split_frontmatter` that
+       extracts only the YAML content between delimiters.
+    """
+    result = split_frontmatter(text)
+    if result is None:
+        return None
+
+    fm_block, _body = result
+    # fm_block is "---\n<yaml>\n---\n" — strip delimiters to get raw YAML.
+    inner = fm_block[3:]  # remove leading "---"
+    inner = inner.rstrip("\n---")  # remove trailing "\n---\n"
+    raw = inner.strip()
     return raw if raw else None
 
 
