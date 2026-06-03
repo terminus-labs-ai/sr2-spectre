@@ -3,7 +3,7 @@
 SpectreToolProvider:
   - Entry point group: sr2.tool_providers
   - Entry point name:  spectre_tools
-  - Reads ToolRegistry from deps.extras["tool_registry"]
+  - Reads ToolRegistry from deps.tool_source (typed ToolSource dependency)
   - Returns registry's ToolDefinitions to the SR2 tools compilation layer
 """
 
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from sr2.config.models import ToolProviderConfig
     from sr2.models import ToolDefinition
     from sr2.pipeline.dependencies import Dependencies
-    from sr2_spectre.tools.registry import ToolRegistry
+    from sr2.pipeline.protocols import ToolSource
 
 
 class SpectreToolProvider:
@@ -28,7 +28,7 @@ class SpectreToolProvider:
 
     Lifecycle:
     - ``build(config, deps)`` — called once at SR2 init; reads ToolRegistry from
-      ``deps.extras["tool_registry"]``.
+      ``deps.tool_source``.
     - ``provide(events)`` — called each turn by the Layer when subscribed events
       arrive; returns the registry's current ToolDefinitions.
     """
@@ -37,7 +37,7 @@ class SpectreToolProvider:
 
     def __init__(self) -> None:
         # Populated by build()
-        self._registry: ToolRegistry
+        self._registry: ToolSource
         self.subscriptions: list[EventSubscription] = []
         self.max_executions: int = 1
         self.execution_count: int = 0
@@ -50,12 +50,17 @@ class SpectreToolProvider:
     ) -> "SpectreToolProvider":
         """Construct provider from pipeline config and injected dependencies.
 
-        Raises KeyError if deps.extras["tool_registry"] is absent — the
-        caller (Agent) is responsible for passing it via SR2(extras=...).
+        Raises RuntimeError if deps.tool_source is absent — the caller
+        (Agent) is responsible for passing it via SR2(tool_source=...).
         """
         self = cls()
-        # Raises KeyError if not present — fail fast at build time
-        self._registry = deps.extras["tool_registry"]
+        # Fail fast at build time if the harness didn't inject a tool source.
+        if deps.tool_source is None:
+            raise RuntimeError(
+                "SpectreToolProvider requires deps.tool_source; "
+                "pass it via SR2(tool_source=registry)."
+            )
+        self._registry = deps.tool_source
         self.subscriptions = [EventSubscription(event_name="turn_start")]
         self.max_executions = config.max_executions
         self.execution_count = 0

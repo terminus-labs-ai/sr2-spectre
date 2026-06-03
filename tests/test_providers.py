@@ -1,7 +1,7 @@
 """Tests for SpectreToolProvider (Step 2).
 
 Covers:
-  A. build() reads tool_registry from deps.extras
+  A. build() reads tool_registry from deps.tool_source
   B. provide() returns ToolDefinition list from the registry
   C. Protocol attributes (subscriptions, max_executions, execution_count)
   D. execution_count incremented inside provide()
@@ -42,7 +42,7 @@ def _make_registry(*names: str) -> ToolRegistry:
 
 def _make_deps(registry: ToolRegistry | None = None) -> Any:
     from sr2.pipeline.dependencies import Dependencies
-    return Dependencies(extras={"tool_registry": registry or _make_registry()})
+    return Dependencies(tool_source=registry or _make_registry())
 
 
 def _make_config(max_executions: int = 1) -> Any:
@@ -60,7 +60,7 @@ class TestBuild:
         provider = SpectreToolProvider.build(_make_config(), _make_deps())
         assert isinstance(provider, SpectreToolProvider)
 
-    def test_build_reads_tool_registry_from_extras(self):
+    def test_build_reads_tool_registry_from_tool_source(self):
         from sr2_spectre.providers import SpectreToolProvider
         reg = _make_registry("search")
         provider = SpectreToolProvider.build(_make_config(), _make_deps(reg))
@@ -69,8 +69,8 @@ class TestBuild:
     def test_build_missing_tool_registry_raises(self):
         from sr2.pipeline.dependencies import Dependencies
         from sr2_spectre.providers import SpectreToolProvider
-        deps = Dependencies(extras={})
-        with pytest.raises(KeyError, match="tool_registry"):
+        deps = Dependencies(tool_source=None)
+        with pytest.raises(RuntimeError, match="tool_source"):
             SpectreToolProvider.build(_make_config(), deps)
 
 
@@ -267,7 +267,7 @@ class TestEndToEnd:
                 pipeline_config=pipeline,
                 llm={"default": mock_llm},
                 token_counter=CharacterTokenCounter(),
-                extras={"tool_registry": reg},
+                tool_source=reg,
             )
             stream = sr2.turn([TextBlock(text="hello")])
             async for _ in stream:
@@ -300,7 +300,7 @@ class TestEndToEnd:
                 pipeline_config=pipeline,
                 llm={"default": mock_llm},
                 token_counter=CharacterTokenCounter(),
-                extras={"tool_registry": reg},
+                tool_source=reg,
             )
             stream = sr2.turn([TextBlock(text="first")])
             async for _ in stream:

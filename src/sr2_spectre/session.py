@@ -66,7 +66,7 @@ class Session:
             llm={"default": llm},
             token_counter=CharacterTokenCounter(),
             session_id=frame_id,
-            extras={"tool_registry": self._registry},
+            tool_source=self._registry,
             tracer=tracer,
             tool_executor=self._execute_tool,
         )

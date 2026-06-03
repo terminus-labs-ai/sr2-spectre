@@ -229,7 +229,7 @@ class TestRuntimeNewSession:
                 runtime.new_session(frame_id="f1")
 
         call_kwargs = MockSR2.call_args.kwargs
-        assert call_kwargs["extras"]["tool_registry"] is runtime.registry
+        assert call_kwargs["tool_source"] is runtime.registry
 
     def test_new_session_creates_independent_sr2_instances(self):
         from sr2_spectre.runtime import Runtime

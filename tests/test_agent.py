@@ -94,17 +94,16 @@ class TestAgentInit:
         # SR2 was constructed
         MockSR2.assert_called_once()
         call_kwargs = MockSR2.call_args.kwargs
-        # extras must contain tool_registry
-        assert "extras" in call_kwargs
-        assert "tool_registry" in call_kwargs["extras"]
+        # tool_source must be passed
+        assert "tool_source" in call_kwargs
 
-    def test_extras_contains_tool_registry(self):
+    def test_tool_source_is_registry(self):
         from sr2_spectre.agent import Agent
         with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config(), session_id="s1")
         call_kwargs = MockSR2.call_args.kwargs
-        assert call_kwargs["extras"]["tool_registry"] is agent.registry
+        assert call_kwargs["tool_source"] is agent.registry
 
     def test_llm_dict_has_default_key(self):
         from sr2_spectre.agent import Agent
