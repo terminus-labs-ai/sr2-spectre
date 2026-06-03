@@ -602,7 +602,6 @@ def format_dry_run(
     config: dict,
     provenance: dict,
     errors: list[str],
-    include_content: bool = False,
     show_provenance: bool = True,
 ) -> str:
     """Format the dry-run report as a string.
@@ -616,7 +615,6 @@ def format_dry_run(
         config: The merged config dict.
         provenance: The provenance map from load_config_with_provenance.
         errors: List of validation error strings (from SpectreConfig pydantic validation).
-        include_content: If True, include raw file content (reserved, not used).
         show_provenance: If True, annotate each top-level key with its source.
 
     Returns:

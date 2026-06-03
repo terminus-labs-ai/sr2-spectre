@@ -42,12 +42,6 @@ def _parse_config_show_args(argv: list[str]) -> argparse.Namespace:
         help="Output plain YAML without source annotations",
     )
     parser.add_argument(
-        "--include-content",
-        action="store_true",
-        default=False,
-        help="Include raw file content in the output (reserved)",
-    )
-    parser.add_argument(
         "--sr2-home",
         type=str,
         default=None,
@@ -104,7 +98,6 @@ def _run_config_show(argv: list[str]) -> int:
         config=config,
         provenance=provenance,
         errors=errors,
-        include_content=args.include_content,
         show_provenance=not args.no_provenance,
     )
     print(output, end="")

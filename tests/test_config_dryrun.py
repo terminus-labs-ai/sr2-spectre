@@ -400,6 +400,50 @@ class TestFormatDryRunReturnType:
 
 
 # ---------------------------------------------------------------------------
+# format_dry_run — include_content removed (spc-17)
+# ---------------------------------------------------------------------------
+
+class TestIncludeContentRemoved:
+    def test_format_dry_run_no_include_content_parameter(self):
+        """format_dry_run no longer accepts include_content (dead param removed)."""
+        from sr2_spectre.config import format_dry_run
+        import inspect
+
+        sig = inspect.signature(format_dry_run)
+        param_names = list(sig.parameters.keys())
+        assert "include_content" not in param_names
+
+    def test_format_dry_run_calling_with_include_content_raises(self):
+        """Passing include_content to format_dry_run raises TypeError."""
+        from sr2_spectre.config import format_dry_run
+        with pytest.raises(TypeError):
+            format_dry_run({}, {}, errors=[], include_content=True)
+
+
+# ---------------------------------------------------------------------------
+# CLI — --include-content flag removed (spc-17)
+# ---------------------------------------------------------------------------
+
+class TestIncludeContentFlagRemoved:
+    def test_include_content_flag_not_in_parser(self, tmp_path):
+        """The --include-content flag no longer exists on 'config show'."""
+        sr2_home = tmp_path / "sr2home"
+        sr2_home.mkdir()
+        cwd = tmp_path / "project"
+        cwd.mkdir()
+
+        _write_yaml(cwd / ".spectre.yaml", {"agent": {"name": "spectre"}})
+
+        result = _run_cli(
+            ["config", "show", f"--sr2-home={sr2_home}", "--include-content"],
+            cwd=str(cwd),
+        )
+        # Should error — unrecognized argument
+        assert result.returncode != 0
+        assert "include-content" in result.stderr or "unrecognized" in result.stderr.lower()
+
+
+# ---------------------------------------------------------------------------
 # CLI — spectre config show
 # ---------------------------------------------------------------------------
 
