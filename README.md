@@ -97,7 +97,7 @@ sr2-spectre/
       builtins/         # Built-in tool implementations
 ```
 
-Spectre owns the conversation loop and tool execution. SR2 owns context compilation, token budgets, and LLM calls. The boundary is `agent.stream_message()` → `sr2.turn()`.
+Spectre owns conversation history, the tool registry, and event translation. SR2 owns the tool execution loop, context compilation, token budgets, and LLM calls. The boundary is `agent.stream_message()` → `sr2.turn()` — SR2 loops internally on tool use, and Spectre renders the resulting stream events.
 
 ## Development
 
