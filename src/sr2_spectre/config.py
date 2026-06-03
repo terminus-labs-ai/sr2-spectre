@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from sr2.config.models import PipelineConfig
 
 from sr2_spectre.config_merge import merge_configs
-from sr2_spectre.path_resolution import resolve_path
+from sr2_spectre.path_resolution import ConfigPathError, resolve_path
 
 
 @dataclass
@@ -76,6 +76,7 @@ class AgentConfig(BaseModel):
     name: str = "spectre"
     tools: list[ToolConfig] = Field(default_factory=list)
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
+    tool_result_max_bytes: int = Field(default=65536)
 
 
 class SpectreConfig(BaseModel):
@@ -123,6 +124,77 @@ def resolve_extends(
         env=env,
     )
     return resolved_config
+
+
+# Known path fields in resolver config dicts that should be resolved.
+_RESOLVER_PATH_FIELDS: frozenset[str] = frozenset(
+    ("plans_root", "knowledge_root")
+)
+
+
+def resolve_resolver_paths(
+    config: dict,
+    declaring_file: Path,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Resolve path fields in all resolver config dicts within *config*.
+
+    Walks ``pipeline.layers[*].resolvers[*].config`` and applies
+    ``resolve_path()`` to known path fields (``plans_root``,
+    ``knowledge_root``). Non-path fields (``project``, ``max_tokens``,
+    etc.) are left untouched.
+
+    Also injects ``declaring_dir`` (the declaring file's parent directory
+    as an absolute string) into each resolver config for downstream
+    consumers that need to know the config file's location.
+
+    Mutates *config* in place.
+
+    Args:
+        config: The merged config dict (after extends resolution + tier merge).
+        declaring_file: The config file against which relative paths resolve.
+        env: Environment variables for ``${VAR}`` interpolation.
+
+    Raises:
+        ConfigPathError: If a ``${VAR}`` token in a path field references
+            an unset environment variable.
+    """
+    pipeline = config.get("pipeline")
+    if not isinstance(pipeline, dict):
+        return
+
+    layers = pipeline.get("layers")
+    if not isinstance(layers, list):
+        return
+
+    declaring_dir = str(declaring_file.parent.resolve())
+
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
+        resolvers = layer.get("resolvers")
+        if not isinstance(resolvers, list):
+            continue
+
+        for resolver in resolvers:
+            if not isinstance(resolver, dict):
+                continue
+            resolver_config = resolver.get("config")
+            if not isinstance(resolver_config, dict):
+                continue
+
+            for field in _RESOLVER_PATH_FIELDS:
+                raw_value = resolver_config.get(field)
+                if not isinstance(raw_value, str):
+                    continue
+
+                try:
+                    resolved = resolve_path(raw_value, declaring_file, env)
+                except ConfigPathError:
+                    raise
+                resolver_config[field] = str(resolved)
+
+            resolver_config["declaring_dir"] = declaring_dir
 
 
 def _default_tier_paths(sr2_home: Path, cwd: Path) -> list[Path]:
@@ -464,15 +536,21 @@ def load_resolved_config_with_provenance(
 
     sr2_home = resolve_sr2_home(env)
 
-    paths = _default_tier_paths(sr2_home, cwd) + [Path(positional_path)]
+    positional_file = Path(positional_path)
+    paths = _default_tier_paths(sr2_home, cwd) + [positional_file]
 
-    return _resolve_tiers_with_provenance(
+    result, result_provenance = _resolve_tiers_with_provenance(
         paths,
         sr2_home=sr2_home,
         cwd=cwd,
         env=env,
         require_last=True,
     )
+
+    # Resolve path fields in resolver configs (FR10)
+    resolve_resolver_paths(result, positional_file, env)
+
+    return result, result_provenance
 
 
 def load_resolved_config(

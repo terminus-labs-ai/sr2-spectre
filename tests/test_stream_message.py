@@ -92,7 +92,7 @@ def _mock_sr2_with_rounds(*round_event_lists: list[StreamEvent]) -> MagicMock:
 
 
 def _make_agent(mock_sr2: MagicMock, **config_kwargs) -> Agent:
-    with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
+    with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
         return Agent(config=_make_config(**config_kwargs), session_id="test-session")
 
 
@@ -663,6 +663,102 @@ class TestStreamMessageToolLoopLimitError:
             ("limit" in t) or ("iteration" in t) or ("stopped" in t)
             for t in delta_texts
         ), f"No limit/iteration notice found in text deltas: {delta_texts}"
+
+
+# ---------------------------------------------------------------------------
+# E2. Tool result name correlation (obsidian-syp)
+# ---------------------------------------------------------------------------
+
+class TestStreamMessageToolResultName:
+    @pytest.mark.asyncio
+    async def test_tool_result_name_matches_tool_use_name(self):
+        """AgentToolResult.name must be populated from the corresponding tool_use_emitted."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="calculator", input={"a": 1, "b": 2})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="3")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="The result is 3"),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        events = await _collect(agent.stream_message("1+2?"))
+
+        results = [e for e in events if isinstance(e, AgentToolResult)]
+        assert len(results) == 1
+        assert results[0].name == "calculator"
+
+    @pytest.mark.asyncio
+    async def test_tool_result_name_multiple_tools(self):
+        """Each AgentToolResult.name matches its corresponding tool_use name by tool_id."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[
+                    ToolUseBlock(id="tu1", name="search", input={"q": "foo"}),
+                    ToolUseBlock(id="tu2", name="fetch", input={"url": "http://example.com"}),
+                ],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[
+                    ToolResultBlock(tool_use_id="tu1", content="search results"),
+                    ToolResultBlock(tool_use_id="tu2", content="<html>"),
+                ],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="Done"),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        events = await _collect(agent.stream_message("search and fetch"))
+
+        results = [e for e in events if isinstance(e, AgentToolResult)]
+        assert len(results) == 2
+        name_by_id = {r.tool_id: r.name for r in results}
+        assert name_by_id["tu1"] == "search"
+        assert name_by_id["tu2"] == "fetch"
+
+    @pytest.mark.asyncio
+    async def test_tool_result_name_across_iterations(self):
+        """Tool result name is correctly tracked across multiple iterations."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="lookup", input={"key": "a"})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="found a")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu2", name="transform", input={"val": "a"})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu2", content="transformed a")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=1),
+            StreamEvent(type="text", text="Final answer"),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        events = await _collect(agent.stream_message("go"))
+
+        results = [e for e in events if isinstance(e, AgentToolResult)]
+        assert len(results) == 2
+        assert results[0].name == "lookup"
+        assert results[1].name == "transform"
 
 
 # ---------------------------------------------------------------------------

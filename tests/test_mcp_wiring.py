@@ -15,6 +15,9 @@ Covers:
     9. Agent.initialize() connects each MCPClient and registers bridges into self.registry
    10. Agent.initialize() with a failing server logs a warning and continues
    11. Agent.initialize() with no mcp_servers completes without error
+
+  Smoke (live server):
+   12. beads-mcp stdio server starts, returns tools, MCPClient connects
 """
 
 from __future__ import annotations
@@ -25,7 +28,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import shutil
+
 from sr2_spectre.config import AgentConfig, McpServerConfig, ModelConfig, SpectreConfig
+
+
+def _which(name: str) -> bool:
+    """Check if a binary is available on PATH or in the project .venv."""
+    if shutil.which(name) is not None:
+        return True
+    # Check the venv bin directory (for tests run via venv)
+    import os, sys
+    # sys.executable lives inside .venv/bin/python, so its parent is .venv/bin
+    venv_bin = os.path.dirname(sys.executable)
+    return os.path.isfile(os.path.join(venv_bin, name))
 
 
 # ---------------------------------------------------------------------------
@@ -219,8 +235,8 @@ class TestAgentInitMcpClients:
             ]
         )
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2, \
-             patch("sr2_spectre.agent.MCPClient") as MockMCPClient:
+        with patch("sr2_spectre.session.SR2") as MockSR2, \
+             patch("sr2_spectre.runtime.MCPClient") as MockMCPClient:
             MockSR2.return_value = MagicMock()
             MockMCPClient.return_value = MagicMock()
 
@@ -247,8 +263,8 @@ class TestAgentInitMcpClients:
             ]
         )
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2, \
-             patch("sr2_spectre.agent.MCPClient") as MockMCPClient:
+        with patch("sr2_spectre.session.SR2") as MockSR2, \
+             patch("sr2_spectre.runtime.MCPClient") as MockMCPClient:
             MockSR2.return_value = MagicMock()
             MockMCPClient.return_value = MagicMock()
 
@@ -265,8 +281,8 @@ class TestAgentInitMcpClients:
 
         cfg = _make_config()  # no mcp_servers
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2, \
-             patch("sr2_spectre.agent.MCPClient") as MockMCPClient:
+        with patch("sr2_spectre.session.SR2") as MockSR2, \
+             patch("sr2_spectre.runtime.MCPClient") as MockMCPClient:
             MockSR2.return_value = MagicMock()
 
             agent = Agent(config=cfg)
@@ -293,8 +309,8 @@ class TestAgentInitialize:
             ]
         )
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2, \
-             patch("sr2_spectre.agent.MCPClient", return_value=mock_client):
+        with patch("sr2_spectre.session.SR2") as MockSR2, \
+             patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -326,8 +342,8 @@ class TestAgentInitialize:
         client_instances = [failing_client, ok_client]
         client_iter = iter(client_instances)
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2, \
-             patch("sr2_spectre.agent.MCPClient", side_effect=lambda **kw: next(client_iter)):
+        with patch("sr2_spectre.session.SR2") as MockSR2, \
+             patch("sr2_spectre.runtime.MCPClient", side_effect=lambda **kw: next(client_iter)):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -348,7 +364,7 @@ class TestAgentInitialize:
 
         cfg = _make_config()  # no mcp_servers
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -374,8 +390,8 @@ class TestAgentInitialize:
             ]
         )
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2, \
-             patch("sr2_spectre.agent.MCPClient", return_value=mock_client):
+        with patch("sr2_spectre.session.SR2") as MockSR2, \
+             patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -398,10 +414,44 @@ class TestAgentInitialize:
             ]
         )
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2, \
-             patch("sr2_spectre.agent.MCPClient", return_value=mock_client):
+        with patch("sr2_spectre.session.SR2") as MockSR2, \
+             patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
         # Must not raise — swallowed as warning
         await agent.initialize()
+
+
+# ---------------------------------------------------------------------------
+# 12. Smoke test: live beads-mcp connection
+# ---------------------------------------------------------------------------
+
+class TestBeadsMcpSmoke:
+    @pytest.mark.skipif(
+        not _which("beads-mcp"),
+        reason="beads-mcp not installed",
+    )
+    async def test_beads_mcp_connects_and_returns_tools(self):
+        """Smoke: connect to the live beads-mcp stdio server and verify tools exist."""
+        import os, sys
+
+        from sr2_spectre.mcp.client import MCPClient
+
+        beads_bin = shutil.which("beads-mcp") or os.path.join(os.path.dirname(sys.executable), "beads-mcp")
+        assert os.path.isfile(beads_bin), f"beads-mcp not found at {beads_bin}"
+
+        client = MCPClient(
+            server_type="stdio",
+            command=[beads_bin],
+            env={"BEADS_WORKING_DIR": "/data/obsidian"},
+        )
+        try:
+            bridges = await client.connect()
+            # beads-mcp v1.x exposes multiple tools; verify at least a few exist
+            names = {b.name for b in bridges}
+            assert len(names) >= 3, f"Expected at least 3 tools from beads-mcp, got: {names}"
+            # Verify core tracking verbs are present
+            assert "list" in names or "search" in names, f"Expected list/search tool in {names}"
+        finally:
+            await client.close()

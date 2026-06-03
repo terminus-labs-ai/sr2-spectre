@@ -76,7 +76,7 @@ def _mock_sr2(turn_events: list[StreamEvent] | None = None) -> MagicMock:
 class TestAgentInit:
     def test_agent_has_sr2_attribute(self):
         from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config(), session_id="s1")
         assert hasattr(agent, "sr2")
@@ -87,7 +87,7 @@ class TestAgentInit:
         import sr2_spectre.agent as agent_module
 
         # Verify LiteLLMCallable is not the primary client on Agent
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config(), session_id="s1")
 
@@ -100,7 +100,7 @@ class TestAgentInit:
 
     def test_extras_contains_tool_registry(self):
         from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config(), session_id="s1")
         call_kwargs = MockSR2.call_args.kwargs
@@ -108,7 +108,7 @@ class TestAgentInit:
 
     def test_llm_dict_has_default_key(self):
         from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             Agent(config=_make_config(), session_id="s1")
         call_kwargs = MockSR2.call_args.kwargs
@@ -122,14 +122,14 @@ class TestAgentInit:
 class TestSessionId:
     def test_session_id_propagated(self):
         from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config(), session_id="my-session")
         assert agent.session_id == "my-session"
 
     def test_default_session_id_uses_name(self):
         from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config())
         assert "test" in agent.session_id
@@ -152,7 +152,7 @@ class TestToolRegistration:
             )
         ])
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             with patch.object(
                 __import__("sr2_spectre.tools.registry", fromlist=["ToolRegistry"]).ToolRegistry,
@@ -162,7 +162,7 @@ class TestToolRegistration:
 
     def test_register_tool_at_runtime(self):
         from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config())
         agent.register_tool("echo", "Echo", {}, lambda msg: msg)
@@ -177,7 +177,7 @@ class TestHandleUserMessageHappyPath:
     @pytest.mark.asyncio
     async def test_returns_turn_result_with_text(self):
         from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             mock_sr2 = _mock_sr2([
                 StreamEvent(type="text", text="Hello "),
                 StreamEvent(type="text", text="world!"),
@@ -203,7 +203,7 @@ class TestHandleUserMessageHappyPath:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
+        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config(), session_id="s")
 
         await agent.handle_user_message("Hello")
@@ -216,7 +216,7 @@ class TestHandleUserMessageHappyPath:
             StreamEvent(type="text", text="Response"),
             StreamEvent(type="end"),
         ])
-        with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
+        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config(), session_id="s")
 
         await agent.handle_user_message("Question")
@@ -259,7 +259,7 @@ class TestHandleUserMessageToolRoundTrip:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
+        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config(), session_id="s")
 
         result = await agent.handle_user_message("What is 1+2?")
@@ -293,7 +293,7 @@ class TestHandleUserMessageToolRoundTrip:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
+        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         await agent.handle_user_message("Echo hi")
@@ -336,7 +336,7 @@ class TestToolErrorRecovery:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
+        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         result = await agent.handle_user_message("Try the tool")
@@ -369,7 +369,7 @@ class TestToolErrorRecovery:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
+        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         result = await agent.handle_user_message("Trigger tool")
@@ -418,7 +418,7 @@ class TestMaxToolRounds:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
+        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         result = await agent.handle_user_message("Start")
@@ -462,7 +462,7 @@ class TestMaxToolRounds:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
+        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         result = await agent.handle_user_message("Trigger")
@@ -479,7 +479,7 @@ class TestNewSession:
     async def test_new_session_resets_history(self):
         from sr2_spectre.agent import Agent
         mock_sr2 = _mock_sr2()
-        with patch("sr2_spectre.agent.SR2", return_value=mock_sr2):
+        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         await agent.handle_user_message("Hello")
@@ -497,7 +497,7 @@ class TestNewSession:
 class TestRegisterTool:
     def test_register_tool_appears_in_registry(self):
         from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config())
         agent.register_tool("ping", "Ping", {}, lambda: "pong")
@@ -534,7 +534,7 @@ class TestMaxToolIterationsSingleSource:
         # 1000 mirrors the real bug: user set it, the loop must honor it.
         cfg = _config_with_iterations(pipeline_iterations=1000)
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             Agent(config=cfg, session_id="s1")
 
@@ -553,7 +553,7 @@ class TestMaxToolIterationsSingleSource:
 
         cfg = _config_with_iterations(pipeline_iterations=7)
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             Agent(config=cfg, session_id="s1")
 
@@ -581,14 +581,14 @@ class TestAgentAClose:
             McpServerConfig(name="b", type="stdio", command=["server_b"]),
         ])
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
 
             mock_client_a = AsyncMock()
             mock_client_b = AsyncMock()
 
             with patch(
-                "sr2_spectre.agent.MCPClient",
+                "sr2_spectre.runtime.MCPClient",
                 side_effect=[mock_client_a, mock_client_b],
             ):
                 agent = Agent(config=cfg)
@@ -603,7 +603,7 @@ class TestAgentAClose:
         """aclose() is a no-op when the agent has no MCP servers configured."""
         from sr2_spectre.agent import Agent
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config())
 

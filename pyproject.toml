@@ -26,6 +26,9 @@ spectre_tools = "sr2_spectre.providers:SpectreToolProvider"
 [project.entry-points."sr2.resolvers"]
 plan = "sr2_spectre.planning.resolver:PlanResolver"
 
+[project.entry-points."sr2.transformers"]
+step_compaction = "sr2_spectre.planning.transformer:StepCompactionTransformer"
+
 [build-system]
 requires = ["uv_build>=0.11.0,<0.12.0"]
 build-backend = "uv_build"

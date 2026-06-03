@@ -90,11 +90,72 @@ When the last task is complete:
 2. Re-check each constraint recorded in the `_plan.md` contract
 3. Set `_plan.md` frontmatter: `status: open` → `status: done`
 
+## Step-Sizing Discipline
+
+> **Why this matters:** A single step must complete within the tool-loop budget
+> (`max_tool_rounds: 40` by default). A step that bundles too many sub-tasks
+> will blow the budget mid-execution, leaving the repo in an inconsistent state
+> with no verification run. This has happened.
+
+### Budget awareness
+
+- **Target:** design each step to complete in **~20–25 tool calls** with room
+  for debugging. If a step needs 30+ tool calls just for the happy path, split
+  it.
+- **Rule of thumb:** if you're tempted to say "while I'm here, also…" that's
+  a signal the step is too big. File it as the next step instead.
+
+### What counts as ONE step (atomic unit)
+
+A single step should do **one coherent action**:
+- ✅ Rename one protocol + update one consumer module
+- ✅ Add one new class with tests
+- ✅ Delete one dead-code class (no consumers)
+- ✅ Update imports in one directory
+
+A step that bundles **multiple concerns** is too big:
+- ❌ Rename a protocol + fold a second protocol + delete two classes + directory
+  rename + update all imports across the codebase (this was the failure mode in
+  the wxd.5 probe — step-01 bundled 5 concerns, hit the tool limit at ~60%)
+- ❌ Refactor core logic + rewrite tests + update CLI (three concerns)
+- ❌ Add a new module + wire it into three existing consumers
+
+### Intra-step checkpoints
+
+For steps that genuinely involve multiple sub-actions within a single concern,
+add **intermediate verification points** inside the task description:
+
+```markdown
+---
+kind: task
+plan: rename-plugin-to-interface
+order: 1
+status: pending
+title: "Rename Plugin Protocol to Interface"
+---
+
+Rename `Plugin` Protocol → `Interface` in `interfaces/__init__.py`.
+
+**Checkpoints:**
+1. After renaming the class: verify `grep -r "class Plugin" src/` returns nothing
+   unexpected (only `Interface` remains).
+2. After updating imports in `cli.py`: verify `python -c "from sr2_spectre.cli import main"` succeeds.
+3. After updating `__init__.py` exports: verify `python -c "from sr2_spectre.interfaces import Interface"` succeeds.
+4. FINAL: `uv run pytest` — full suite green.
+```
+
+This way, if the tool limit hits mid-step, the checkpoint state shows exactly
+how far you got and what's left — instead of a half-renamed codebase with no
+signal.
+
 ## Important Rules
 
 - **Never modify multiple tasks in one pass.** Work one step at a time.
 - **Always verify before advancing.** A `done` task means verified.
-- **Don't skip grounding.** Understanding the codebase first prevents
-  rework.
+- **Don't skip grounding.** Understanding the codebase first prevents rework.
 - **Don't silently resume a stale plan.** If an open plan's `goal:` doesn't
   match the current task, surface the mismatch instead of proceeding.
+- **Externalize findings before completing.** Before calling `complete_step`
+  (or flipping `status: done`), append any cross-step discovery to
+  `_findings.md` in the plan directory. These survive context compaction and
+  are re-injected by the resolver on every turn.

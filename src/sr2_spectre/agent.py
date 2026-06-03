@@ -1,6 +1,19 @@
-"""Agent — SR2-powered spectre agent.
+"""Agent — SR2-powered spectre agent (backward-compat facade).
 
-Owns:
+The Agent is now a thin facade over Runtime + Session. It maintains full
+backward compatibility: all attributes (session_id, history, registry, sr2)
+and methods (stream_message, handle_user_message, new_session, register_tool,
+initialize, aclose) work identically.
+
+Internally the Agent:
+- Constructs a Runtime (shared config, LLM, MCP clients, tool registry)
+- Creates a single Session (frame_id = session_id)
+- Delegates all conversation operations to the Session
+
+This design enables future multi-frame operation (spc-13) where N Sessions
+share one Runtime. The single-frame path remains behaviorally identical.
+
+Owns (via delegation):
 - Session identity and authoritative conversation history (list[Message])
 - Tool registry (execution side — provides tool_executor callback to SR2)
 - SR2 instance (context compilation, LLM call, token budgets)
@@ -19,40 +32,30 @@ spectre catches SR2's ToolLoopLimitError and stops.
 
 from __future__ import annotations
 
-import logging
-from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable
+import json as _json
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 if TYPE_CHECKING:
     from sr2.pipeline.tracing import Tracer
 
-from sr2.config.models import ToolLoopLimitError
-from sr2.integrations.litellm import LiteLLMCallable
-from sr2.models import Message, TextBlock, ToolResultBlock, ToolUseBlock
-from sr2.orchestrator import SR2
-from sr2.pipeline.token_counting import CharacterTokenCounter
+from sr2.pipeline.events import Event, EventPhase
+from sr2.models import ToolResultBlock
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.core import TurnResult
-from sr2_spectre.events import (
-    AgentDone,
-    AgentEvent,
-    AgentTextDelta,
-    AgentToolResult,
-    AgentToolStart,
-)
-from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
-from sr2_spectre.tools.registry import ToolRegistry
-
-# Type alias for SR2's tool_executor callback
-ToolExecutor = Callable[[ToolUseBlock], Awaitable[ToolResultBlock]]
+from sr2_spectre.events import AgentEvent
+from sr2_spectre.runtime import Runtime
 
 # ---------------------------------------------------------------------------
-# complete_step event emission
+# Backward-compat aliases — existing code imports these from agent.py
 # ---------------------------------------------------------------------------
 
-import json as _json
+# session_id → frame_id mapping: Agent's session_id *is* the frame_id
+# for the single-frame path.
 
-from sr2.pipeline.events import Event, EventPhase
 
+# ---------------------------------------------------------------------------
+# complete_step event emission (used by Session._execute_tool and tests)
+# ---------------------------------------------------------------------------
 
 def _is_complete_step_success(result_block: ToolResultBlock) -> dict[str, Any] | None:
     """Check if a tool result is a successful complete_step output.
@@ -79,19 +82,18 @@ def _is_complete_step_success(result_block: ToolResultBlock) -> dict[str, Any] |
         }
     return None
 
-logger = logging.getLogger(__name__)
-
 
 class Agent:
-    """SR2 Spectre agent.
+    """SR2 Spectre agent — backward-compatible facade over Runtime + Session.
 
-    Owns:
-    - session_id and authoritative history (list[Message])
-    - ToolRegistry (tool execution only — definitions injected via SR2 pipeline)
-    - SR2 instance (pipeline, LLM, token budgets, context compilation)
+    Maintains identical external API to the pre-split Agent. All attributes
+    and methods delegate to the internal Runtime and Session instances.
 
-    SR2 is a stateless per-round compiler. Agent seeds it with prior history
-    and passes the newest message as user_input each turn.
+    For backward compatibility the following attributes remain accessible:
+    - session_id: str (the frame_id of the internal Session)
+    - history: list[Message] (delegated to Session.history)
+    - registry: ToolRegistry (delegated to Runtime.registry)
+    - sr2: SR2 (delegated to Session.sr2)
     """
 
     def __init__(
@@ -100,162 +102,65 @@ class Agent:
         session_id: str | None = None,
         tracer: "Tracer | None" = None,
     ) -> None:
-        self.config = config
-        self.session_id: str = session_id or f"{config.agent.name}-default"
-        self.history: list[Message] = []
+        self._config = config
+        self._runtime = Runtime(config)
 
-        # Tool registry — spectre owns tool *execution*
-        self.registry = ToolRegistry()
-        for tool_cfg in config.agent.tools:
-            self.registry.register_from_class_path(tool_cfg.class_path, tool_cfg.config)
+        # session_id is the frame_id for single-frame operation
+        frame_id = session_id or f"{config.agent.name}-default"
+        self._session = self._runtime.new_session(frame_id=frame_id, tracer=tracer)
 
-        # MCP clients — one per mcp_servers entry; connected lazily via initialize()
-        self._mcp_clients: list[MCPClient] = []
-        for mcp_cfg in config.agent.mcp_servers:
-            if mcp_cfg.type == "stdio":
-                client = MCPClient(server_type="stdio", command=mcp_cfg.command, args=mcp_cfg.args, env=mcp_cfg.env)
-            else:
-                client = MCPClient(server_type="http", url=mcp_cfg.url)
-            self._mcp_clients.append(client)
+    # ---- Backward-compat property accessors ----
 
-        # Build LLM callable — spectre constructs it, then hands it to SR2
-        model_cfg = config.models["default"]
-        llm_callable = LiteLLMCallable(
-            model=model_cfg.model,
-            base_url=model_cfg.base_url,
-        )
+    @property
+    def config(self) -> SpectreConfig:
+        """DEPRECATED — use _config. Kept for backward compatibility."""
+        return self._config
 
-        # The tool-loop limit lives entirely in SR2 (pipeline.max_tool_iterations).
-        # Spectre does not mirror or override it — the configured pipeline value is
-        # the single source of truth and flows straight through to SR2 below.
+    @property
+    def session_id(self) -> str:
+        """Session identity (= frame_id for single-frame path)."""
+        return self._session.frame_id
 
-        # SR2 owns context compilation, tool definition injection, and LLM calls
-        # Spectre provides the tool_executor callback so SR2 can execute tools
-        self.sr2 = SR2(
-            pipeline_config=config.pipeline,
-            llm={"default": llm_callable},
-            token_counter=CharacterTokenCounter(),
-            session_id=self.session_id,
-            extras={"tool_registry": self.registry},
-            tracer=tracer,
-            tool_executor=self._execute_tool,
-        )
+    @session_id.setter
+    def session_id(self, value: str) -> None:
+        """Allow setting session_id (used by new_session())."""
+        # For backward compat, we recreate the session under the Runtime
+        self._session = self._runtime.new_session(frame_id=value)
 
-    async def _execute_tool(self, block: ToolUseBlock) -> ToolResultBlock:
-        """SR2 tool_executor callback. Executes a tool via the registry.
+    @property
+    def history(self) -> list:
+        """Conversation history (delegated to Session)."""
+        return self._session.history
 
-        Special-cases ``complete_step``: on success, emits a
-        ``plan_step_completed`` event on the SR2 bus so the
-        StepCompactionTransformer can fire.
-        """
-        try:
-            out = await self.registry.execute(block.name, block.input)
-            result = ToolResultBlock(tool_use_id=block.id, content=str(out))
+    @property
+    def registry(self) -> Any:
+        """Tool registry (delegated to Runtime)."""
+        return self._runtime.registry
 
-            # Emit plan_step_completed event on successful complete_step
-            if block.name == "complete_step":
-                event_data = _is_complete_step_success(result)
-                if event_data is not None:
-                    self.sr2.bus.queue(
-                        Event(
-                            name="plan_step_completed",
-                            phase=EventPhase.COMPLETED,
-                            source_layer="plan",
-                            data=event_data,
-                        )
-                    )
+    @property
+    def sr2(self) -> Any:
+        """SR2 instance (delegated to Session)."""
+        return self._session.sr2
 
-            return result
-        except Exception as exc:
-            logger.warning("Tool %r failed: %s", block.name, exc)
-            return ToolResultBlock(tool_use_id=block.id, content=f"ERROR: {exc}", is_error=True)
+    @property
+    def _execute_tool(self) -> Any:
+        """Tool executor callback (delegated to Session). Kept for test backward compat."""
+        return self._session._execute_tool
+
+    # ---- Delegated methods ----
 
     async def initialize(self) -> None:
-        """Connect all MCP clients and register their tool bridges into the registry.
-
-        Failures for individual servers are caught and logged as warnings so that
-        one bad server does not prevent the agent from starting.
-        """
-        for client in self._mcp_clients:
-            try:
-                bridges = await client.connect()
-                for bridge in bridges:
-                    self.registry.register(
-                        name=bridge.name,
-                        description=bridge.description,
-                        input_schema=bridge.input_schema,
-                        fn=bridge,
-                    )
-            except MCPConnectionError as exc:
-                logger.warning("MCP server failed to connect: %s", exc)
+        """Connect all MCP clients and register their tool bridges."""
+        await self._runtime.initialize()
 
     async def stream_message(self, text: str) -> AsyncIterator[AgentEvent]:
-        """Stream agent events for a user message.
-
-        SR2 handles the tool loop internally via tool_executor. We consume
-        its stream events and translate them to AgentEvent types for the TUI.
-
-        Yields AgentTextDelta, AgentToolStart, AgentToolResult events during
-        processing, and always yields AgentDone as the final event.
-        """
-        self.history.append(Message(role="user", content=[TextBlock(text=text)]))
-
-        prior = self.history[:-1]
-        increment = self.history[-1].content
-        self.sr2.seed_session(prior)
-
-        text_acc: list[str] = []
-        total_tool_calls = 0
-
-        try:
-            async for ev in self.sr2.turn(user_input=increment):
-                if ev.type == "text" and ev.text:
-                    text_acc.append(ev.text)
-                    yield AgentTextDelta(text=ev.text)
-                elif ev.type == "tool_use_emitted" and ev.tool_uses:
-                    for tu in ev.tool_uses:
-                        total_tool_calls += 1
-                        yield AgentToolStart(tool_id=tu.id, name=tu.name, input=tu.input)
-                elif ev.type == "tool_result_received" and ev.tool_results:
-                    for tr in ev.tool_results:
-                        yield AgentToolResult(
-                            tool_id=tr.tool_use_id,
-                            name="",  # SR2 doesn't carry name on result; that's OK for TUI
-                            content=tr.content,
-                            is_error=getattr(tr, "is_error", False),
-                        )
-                # Suppress iteration_complete, usage, end events from leaking to TUI
-        except ToolLoopLimitError:
-            # SR2 hit the tool-loop iteration limit. Stop consuming, surface a
-            # short notice, and fall through to the normal AgentDone emission.
-            notice = "Tool iteration limit reached; stopping."
-            text_acc.append(notice)
-            yield AgentTextDelta(text=notice)
-
-        last_text = "".join(text_acc)
-        assistant_content = [TextBlock(text=last_text)] if last_text else []
-        self.history.append(Message(role="assistant", content=assistant_content))
-
-        logger.debug(
-            "Turn complete, %d tool calls",
-            total_tool_calls,
-        )
-        yield AgentDone(tool_calls_executed=total_tool_calls)
+        """Stream agent events for a user message."""
+        async for ev in self._session.stream_message(text):
+            yield ev
 
     async def handle_user_message(self, text: str) -> TurnResult:
-        """Process a user message through the SR2-powered tool loop.
-
-        Re-implemented on top of stream_message() — collects all events and
-        returns a TurnResult.
-        """
-        text_parts: list[str] = []
-        total = 0
-        async for ev in self.stream_message(text):
-            if isinstance(ev, AgentTextDelta):
-                text_parts.append(ev.text)
-            elif isinstance(ev, AgentDone):
-                total = ev.tool_calls_executed
-        return TurnResult(text="".join(text_parts), tool_calls_executed=total)
+        """Process a user message through the SR2-powered tool loop."""
+        return await self._session.handle_user_message(text)
 
     def register_tool(
         self,
@@ -265,14 +170,17 @@ class Agent:
         fn: Any,
     ) -> None:
         """Register a tool at runtime (not from config)."""
-        self.registry.register(name, description, input_schema, fn)
+        self._runtime.registry.register(name, description, input_schema, fn)
 
     async def aclose(self) -> None:
-        """Close all MCP client transports. Safe to call even if initialize() was never called."""
-        for client in self._mcp_clients:
-            await client.close()
+        """Close all MCP client transports."""
+        await self._runtime.aclose()
 
     def new_session(self, session_id: str | None = None) -> None:
-        """Reset conversation history and start a new session."""
-        self.session_id = session_id or f"{self.config.agent.name}-default"
-        self.history = []
+        """Reset conversation history and start a new session.
+
+        Creates a new Session under the same Runtime (shared config,
+        LLM, MCP, tool registry) with fresh history.
+        """
+        frame_id = session_id or f"{self._config.agent.name}-default"
+        self._session = self._runtime.new_session(frame_id=frame_id)
