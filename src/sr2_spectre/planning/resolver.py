@@ -485,8 +485,8 @@ class PlanResolver:
                 text = task_file.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-                body = self._strip_frontmatter(text)
-                pending_tasks.append((order, body))
+            body = self._strip_frontmatter(text)
+            pending_tasks.append((order, body))
 
         if not pending_tasks:
             return ""

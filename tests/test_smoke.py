@@ -190,7 +190,7 @@ class TestSmokeAgentInstantiation:
                 {"name": "file_write", "class_path": "sr2_spectre.tools.builtins.file_write.FileWriteTool"},
             ]
         )
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -201,7 +201,7 @@ class TestSmokeAgentInstantiation:
     def test_agent_no_tools_creates_empty_registry(self) -> None:
         """Agent with no tools has an empty registry."""
         cfg = _minimal_spectre_config(tools=[])
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -220,7 +220,7 @@ class TestSmokeAgentInstantiation:
             {"name": "complete_step", "class_path": "sr2_spectre.tools.builtins.complete_step.CompleteStepTool"},
         ]
         cfg = _minimal_spectre_config(tools=all_tool_defs)
-        with patch("sr2_spectre.agent.SR2") as MockSR2:
+        with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -276,8 +276,8 @@ class TestSmokeMcpWiring:
             ]
         )
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2, \
-             patch("sr2_spectre.agent.MCPClient", return_value=mock_client):
+        with patch("sr2_spectre.session.SR2") as MockSR2, \
+             patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -298,8 +298,8 @@ class TestSmokeMcpWiring:
             ]
         )
 
-        with patch("sr2_spectre.agent.SR2") as MockSR2, \
-             patch("sr2_spectre.agent.MCPClient", return_value=mock_client):
+        with patch("sr2_spectre.session.SR2") as MockSR2, \
+             patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
