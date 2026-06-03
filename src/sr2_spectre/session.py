@@ -26,6 +26,7 @@ from sr2_spectre.core import RunContext, TurnResult
 from sr2_spectre.events import (
     AgentDone,
     AgentEvent,
+    AgentThinkingDelta,
     AgentTextDelta,
     AgentToolResult,
     AgentToolStart,
@@ -144,6 +145,7 @@ class Session:
             self.sr2.seed_session(prior)
 
             text_acc: list[str] = []
+            thinking_acc: list[str] = []
             total_tool_calls = 0
             tool_id_to_name: dict[str, str] = {}
 
@@ -152,6 +154,9 @@ class Session:
                     if ev.type == "text" and ev.text:
                         text_acc.append(ev.text)
                         yield AgentTextDelta(text=ev.text)
+                    elif ev.type == "thinking" and ev.text:
+                        thinking_acc.append(ev.text)
+                        yield AgentThinkingDelta(text=ev.text)
                     elif ev.type == "tool_use_emitted" and ev.tool_uses:
                         for tu in ev.tool_uses:
                             total_tool_calls += 1

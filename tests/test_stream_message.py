@@ -31,6 +31,7 @@ from sr2_spectre.core import TurnResult
 from sr2_spectre.events import (
     AgentDone,
     AgentEvent,
+    AgentThinkingDelta,
     AgentTextDelta,
     AgentToolResult,
     AgentToolStart,
@@ -910,3 +911,95 @@ class TestStreamMessageMultiRoundOrdering:
         assert min(text_delta_indices) < tool_start_idx
         assert tool_start_idx < tool_result_idx
         assert tool_result_idx < done_idx
+
+
+# ---------------------------------------------------------------------------
+# J. Thinking events pass-through (spc-26)
+# ---------------------------------------------------------------------------
+
+class TestStreamMessageThinking:
+    @pytest.mark.asyncio
+    async def test_thinking_events_passed_through(self):
+        """SR2 thinking events are translated to AgentThinkingDelta."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(type="thinking", text="Let me think"),
+            StreamEvent(type="text", text="The answer is 42"),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        events = await _collect(agent.stream_message("What is 6*7?"))
+
+        thinking_events = [e for e in events if isinstance(e, AgentThinkingDelta)]
+        assert len(thinking_events) == 1
+        assert thinking_events[0].text == "Let me think"
+        assert thinking_events[0].type == "thinking_delta"
+
+    @pytest.mark.asyncio
+    async def test_thinking_not_accumulated_in_history(self):
+        """Thinking text is NOT appended to assistant history — only regular text is."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(type="thinking", text="reasoning here"),
+            StreamEvent(type="text", text="final answer"),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        await _collect(agent.stream_message("question"))
+
+        # History should have user + assistant, assistant should NOT contain thinking
+        assert len(agent.history) == 2
+        assistant = agent.history[1]
+        assert assistant.role == "assistant"
+        # The text content should be the regular response, not the thinking
+        text_content = " ".join(
+            block.text for block in assistant.content if hasattr(block, "text")
+        )
+        assert "final answer" in text_content
+        assert "reasoning here" not in text_content
+
+    @pytest.mark.asyncio
+    async def test_multiple_thinking_chunks_passed_through(self):
+        """Multiple thinking events are all yielded as separate AgentThinkingDelta."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(type="thinking", text="Part 1 "),
+            StreamEvent(type="thinking", text="Part 2"),
+            StreamEvent(type="text", text="Answer"),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        events = await _collect(agent.stream_message("go"))
+
+        thinking_events = [e for e in events if isinstance(e, AgentThinkingDelta)]
+        assert len(thinking_events) == 2
+        assert thinking_events[0].text == "Part 1 "
+        assert thinking_events[1].text == "Part 2"
+
+    @pytest.mark.asyncio
+    async def test_thinking_then_tool_then_text_order(self):
+        """Thinking events appear before tool calls when reasoning precedes tools."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(type="thinking", text="Planning approach"),
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="search", input={"q": "x"})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="found")],
+            ),
+            StreamEvent(type="iteration_complete", iteration=0),
+            StreamEvent(type="text", text="Found it!"),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        events = await _collect(agent.stream_message("search"))
+
+        thinking_idx = next(i for i, e in enumerate(events) if isinstance(e, AgentThinkingDelta))
+        tool_start_idx = next(i for i, e in enumerate(events) if isinstance(e, AgentToolStart))
+        text_idx = next(i for i, e in enumerate(events) if isinstance(e, AgentTextDelta))
+
+        assert thinking_idx < tool_start_idx
+        assert tool_start_idx < text_idx

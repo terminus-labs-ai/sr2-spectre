@@ -27,6 +27,18 @@ class AgentTextDelta(AgentEvent):
 
 
 @dataclass
+class AgentThinkingDelta(AgentEvent):
+    """Incremental thinking/reasoning fragment from the LLM.
+
+    Emitted when the model uses extended thinking (Claude thinking blocks,
+    OpenAI reasoning_content). Rendered visually distinct from regular text
+    so the user can see the model's reasoning process.
+    """
+    type: str = field(default="thinking_delta", init=False)
+    text: str = ""
+
+
+@dataclass
 class AgentToolStart(AgentEvent):
     """Emitted before a tool begins executing."""
     type: str = field(default="tool_start", init=False)
@@ -55,6 +67,7 @@ class AgentDone(AgentEvent):
 __all__ = [
     "AgentEvent",
     "AgentTextDelta",
+    "AgentThinkingDelta",
     "AgentToolStart",
     "AgentToolResult",
     "AgentDone",

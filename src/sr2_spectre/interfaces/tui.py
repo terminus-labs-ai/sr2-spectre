@@ -23,7 +23,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
+from sr2_spectre.events import AgentDone, AgentTextDelta, AgentThinkingDelta, AgentToolResult, AgentToolStart
 
 if TYPE_CHECKING:
     from sr2_spectre.agent import Agent
@@ -253,8 +253,20 @@ class TUIInterface:
                 # --- stream message ---
                 try:
                     tool_calls = 0
+                    thinking_active = False
                     async for ev in agent.stream_message(stripped):
                         if isinstance(ev, AgentTextDelta):
+                            # Close thinking block if we were in one
+                            if thinking_active:
+                                sys.stdout.write("\n")
+                                thinking_active = False
+                            sys.stdout.write(ev.text)
+                            sys.stdout.flush()
+                        elif isinstance(ev, AgentThinkingDelta):
+                            # Open thinking block on first chunk
+                            if not thinking_active:
+                                sys.stdout.write("\n> ")
+                                thinking_active = True
                             sys.stdout.write(ev.text)
                             sys.stdout.flush()
                         elif isinstance(ev, AgentToolStart):
