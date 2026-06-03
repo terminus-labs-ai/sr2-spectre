@@ -56,6 +56,17 @@ _LAYER3_HEADER = "## Current Task"
 
 _LAYER_SEPARATOR = "\n---\n"
 
+# Layer priority for budget enforcement (lower number = higher priority = more protected).
+# L3 (current task) is most important — the agent needs it to execute right now.
+# L2 (plan overview) provides context for the current task.
+# L1 (project knowledge) is background — useful but survivable without.
+_LAYER_PRIORITY: dict[str, int] = {
+    _LAYER1_HEADER: 3,  # dropped first
+    _LAYER2_HEADER: 2,  # dropped second
+    _LAYER3_HEADER: 1,  # dropped last (most protected)
+    _PLANNING_HEADER: 3,  # same priority as L1 — trigger is disposable
+}
+
 
 # ---------------------------------------------------------------------------
 # PlanResolver
@@ -168,6 +179,11 @@ class PlanResolver:
             if l3_content.strip():
                 layers.append((_LAYER3_HEADER, l3_content))
 
+        # Token budget enforcement — layer-priority-aware (FR8, obsidian-2v2).
+        # Drop layers from lowest to highest priority before joining.
+        if self._max_tokens is not None:
+            layers = self._enforce_budget(layers, self._max_tokens)
+
         # Build the combined text with delimiters
         combined_parts: list[str] = []
         for header, content in layers:
@@ -176,11 +192,7 @@ class PlanResolver:
 
         combined = _LAYER_SEPARATOR.join(combined_parts)
 
-        # Token budget enforcement
         tokens = len(combined) // CHARS_PER_TOKEN
-        if self._max_tokens is not None and tokens > self._max_tokens:
-            combined = self._truncate_to_budget(combined, self._max_tokens)
-            tokens = len(combined) // CHARS_PER_TOKEN
 
         return ResolvedContent(
             resolver_name=self.name,
@@ -333,22 +345,103 @@ class PlanResolver:
         except ValueError:
             return text
 
-    @staticmethod
-    def _truncate_to_budget(text: str, max_tokens: int) -> str:
-        """Truncate text to fit within max_tokens (chars // 4 approximation).
+    def _enforce_budget(
+        self,
+        layers: list[tuple[str, str]],
+        max_tokens: int,
+    ) -> list[tuple[str, str]]:
+        """Enforce token budget by dropping layers from lowest to highest priority.
 
-        Adds a truncation notice at the end. If the budget is too small even
-        for the notice, the notice alone is returned.
+        Drop order: L1 (project knowledge) → L2 (plan) → L3 (task, most protected).
+        If L3 alone exceeds budget, truncate L3 tail with a notice.
+
+        Returns a (possibly reduced) list of (header, content) tuples.
+        """
+        max_chars = max_tokens * CHARS_PER_TOKEN
+
+        # Total chars includes header + content per layer + separator overhead
+        total_chars = sum(len(h) + len(c) for h, c in layers)
+        separator_overhead = max(0, len(layers) - 1) * len(_LAYER_SEPARATOR)
+
+        if total_chars + separator_overhead <= max_chars:
+            return layers  # fits within budget — no truncation needed
+
+        # Sort layers by priority (highest priority number = dropped first).
+        # Use enumerate to preserve original order for equal priority.
+        indexed_layers: list[tuple[int, str, str]] = [
+            (i, h, c) for i, (h, c) in enumerate(layers)
+        ]
+        indexed_layers.sort(
+            key=lambda t: (-_LAYER_PRIORITY.get(t[1], 0), t[0])
+        )
+
+        # Iteratively drop lowest-priority layers until budget fits.
+        # Stop dropping when only one layer remains — that last layer gets
+        # tail-truncated instead of dropped entirely.
+        remaining = list(layers)
+        for _idx, header, _content in indexed_layers:
+            if len(remaining) <= 1:
+                break  # Don't drop the last layer — truncate it instead
+
+            # Remove this layer from remaining
+            candidate = [(h, c) for h, c in remaining if h != header]
+            candidate_chars = sum(len(h) + len(c) for h, c in candidate)
+            # Account for separator overhead
+            sep_overhead = max(0, len(candidate) - 1) * len(_LAYER_SEPARATOR)
+            total = candidate_chars + sep_overhead
+
+            if total <= max_chars:
+                # Log what was dropped
+                layer_name = header.replace("## ", "")
+                logger.info(
+                    "Token budget exceeded: dropped %s layer.",
+                    layer_name,
+                )
+                remaining = candidate
+                break
+            # Doesn't fit yet — keep this layer removed and try dropping the next one
+            remaining = candidate
+
+        # If the remaining layers still exceed budget, truncate the last remaining layer
+        if remaining:
+            rem_total = sum(len(h) + len(c) for h, c in remaining)
+            rem_sep = max(0, len(remaining) - 1) * len(_LAYER_SEPARATOR)
+            if rem_total + rem_sep > max_chars:
+                remaining = self._truncate_last_layer(remaining, max_tokens)
+
+        return remaining
+
+    @staticmethod
+    def _truncate_last_layer(
+        layers: list[tuple[str, str]],
+        max_tokens: int,
+    ) -> list[tuple[str, str]]:
+        """Truncate the last remaining layer's content from the tail.
+
+        Used as a last resort when even dropping all lower-priority layers
+        doesn't fit the budget. Truncates the content of the highest-priority
+        remaining layer, preserving the header.
         """
         max_chars = max_tokens * CHARS_PER_TOKEN
         notice = "\n\n⚠️ Content truncated — token budget exceeded."
 
-        if len(text) <= max_chars:
-            return text
+        if not layers:
+            return []
 
-        # Ensure cutoff leaves at least room for the notice
-        cutoff = max(0, max_chars - len(notice))
-        return text[:cutoff] + notice
+        # Find the highest-priority layer to truncate (lowest priority number)
+        # Prefer L3 > L2 > L1. Among equal priority, truncate last one.
+        truncate_idx = max(
+            range(len(layers)),
+            key=lambda i: (-_LAYER_PRIORITY.get(layers[i][0], 0), i),
+        )
+
+        header, content = layers[truncate_idx]
+        available = max(0, max_chars - len(header) - len(notice))
+
+        if len(content) > available:
+            layers[truncate_idx] = (header, content[:available] + notice)
+
+        return layers
 
 
 # ---------------------------------------------------------------------------
