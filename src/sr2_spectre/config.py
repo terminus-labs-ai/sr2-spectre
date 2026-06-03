@@ -73,6 +73,20 @@ class McpServerConfig(BaseModel):
     url: str = ""
 
 
+class SkillConfig(BaseModel):
+    """Configuration for a loadable skill file.
+
+    Skills are knowledge packages loaded from disk at runtime. Each
+    SkillConfig specifies a file path and the metadata used to register
+    the skill in the SkillRegistry.
+    """
+    name: str
+    path: str                       # File path (supports ~, ${VAR})
+    description: str = ""           # Override description (derived from name if empty)
+    version: str = "0.1.0"
+    tags: list[str] = Field(default_factory=list)
+
+
 class AgentConfig(BaseModel):
     """Agent-level configuration — spectre-owned concerns only.
 
@@ -81,6 +95,7 @@ class AgentConfig(BaseModel):
     """
     name: str = "spectre"
     tools: list[ToolConfig] = Field(default_factory=list)
+    skills: list[SkillConfig] = Field(default_factory=list)
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     tool_result_max_bytes: int = Field(default=65536)
 

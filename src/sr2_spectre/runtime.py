@@ -17,6 +17,8 @@ from sr2.pipeline.token_counting import CharacterTokenCounter
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
 from sr2_spectre.session import Session
+from sr2_spectre.skills.builtin import DEFAULT_SKILLS
+from sr2_spectre.skills.core import SkillRegistry, load_skill_from_path
 from sr2_spectre.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,10 @@ class Runtime:
         # tasks done. Scanning pipeline.layers for type=='plan' gives us the
         # resolver's plans_root so there's a single source of truth.
         self._auto_inject_complete_step(config)
+
+        # Bootstrap SkillRegistry: builtin DEFAULT_SKILLS + config-declared files.
+        self.skill_registry = SkillRegistry()
+        self._bootstrap_skills(config)
 
         # MCP clients — one per mcp_servers entry; connected lazily via initialize()
         self._mcp_clients: list[MCPClient] = []
@@ -170,3 +176,64 @@ class Runtime:
                 if resolver.type == "plan":
                     return resolver.config.get("plans_root")
         return None
+
+    def _bootstrap_skills(self, config: SpectreConfig) -> None:
+        """Bootstrap the SkillRegistry with DEFAULT_SKILLS + config-declared skills.
+
+        Always registers the builtin DEFAULT_SKILLS (sr2-conventions). Then
+        loads any additional skills declared in agent.skills[] from disk
+        using load_skill_from_path.
+
+        Auto-injects the load_skill tool so the agent can discover and load
+        skills at runtime.
+        """
+        # 1. Register builtin defaults
+        for skill in DEFAULT_SKILLS:
+            self.skill_registry.register(skill)
+        logger.info("Registered %d default skill(s)", len(DEFAULT_SKILLS))
+
+        # 2. Load config-declared skill files
+        for skill_cfg in config.agent.skills:
+            try:
+                skill = load_skill_from_path(
+                    name=skill_cfg.name,
+                    path=skill_cfg.path,
+                    version=skill_cfg.version,
+                    description=skill_cfg.description,
+                    tags=skill_cfg.tags,
+                )
+                self.skill_registry.register(skill)
+                logger.info("Loaded skill '%s' from %s", skill_cfg.name, skill_cfg.path)
+            except FileNotFoundError:
+                logger.warning(
+                    "Skill file not found: '%s' at %s — skipping",
+                    skill_cfg.name,
+                    skill_cfg.path,
+                )
+
+        # 3. Auto-inject load_skill tool
+        self._auto_inject_load_skill()
+
+    def _auto_inject_load_skill(self) -> None:
+        """Auto-register the load_skill tool if not already present.
+
+        The load_skill tool is always available — it's the runtime entry
+        point for the skills subsystem. Unlike complete_step (which is
+        conditional on a plan resolver), skills are always useful.
+        """
+        if "load_skill" in self.registry:
+            return
+
+        # Import locally to avoid circular dependency at module level.
+        from sr2_spectre.tools.builtins.load_skill import LoadSkillTool
+
+        self.registry.register(
+            name=LoadSkillTool.name,
+            description=LoadSkillTool.description,
+            input_schema=LoadSkillTool.input_schema,
+            fn=LoadSkillTool(registry=self.skill_registry).__call__,
+        )
+        logger.info(
+            "Auto-injected load_skill tool (%d skill(s) available)",
+            len(self.skill_registry),
+        )
