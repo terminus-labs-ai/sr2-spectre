@@ -16,9 +16,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from sr2_spectre.planning import TaskFrontmatter, TaskStatus, parse_file, split_frontmatter
 
@@ -217,10 +220,17 @@ class CompleteStepTool:
 
     @staticmethod
     def _flip_status(task_file: Path) -> None:
-        """Flip ``status: pending`` → ``status: done`` in the frontmatter only.
+        """Flip status to done in the frontmatter using YAML-aware replacement.
 
-        The replace is bounded to the frontmatter block so a ``status: pending``
-        mention in the task body can never be corrupted.
+        Parses the frontmatter YAML, mutates the ``status`` field, and
+        re-serializes the YAML block. This is tolerant of spacing, case,
+        and quoting variants that the frontmatter parser already accepts.
+
+        Bounded to the frontmatter block so body content is never corrupted.
+
+        Raises ``ValueError`` if the status line cannot be located (e.g. the
+        file has no ``status`` key at all — a programming error in the call
+        site since the caller should have verified the field exists).
         """
         text = task_file.read_text(encoding="utf-8")
         result = split_frontmatter(text)
@@ -229,11 +239,62 @@ class CompleteStepTool:
             return
 
         fm_block, body = result
-        new_fm_block = fm_block.replace(
-            f"status: {TaskStatus.PENDING.value}",
-            f"status: {TaskStatus.DONE.value}",
-            1,
+
+        # Extract raw YAML between delimiters.
+        inner = fm_block[3:]  # strip opening "---\n"
+        # Remove trailing "\n---" (the closing delimiter) and any trailing newline.
+        # fm_block looks like "---\n<yaml>\n---\n"
+        closing_idx = inner.rfind("\n---")
+        if closing_idx == -1:
+            logger.warning("Malformed frontmatter in %s — status not flipped", task_file.name)
+            return
+        raw_yaml = inner[:closing_idx].strip()
+        trailing = inner[closing_idx:]  # "\n---\n" (preserved exactly)
+
+        # Parse the YAML block into a mapping.
+        try:
+            fm_data: dict[str, Any] = yaml.safe_load(raw_yaml)
+        except yaml.YAMLError:
+            logger.warning("Cannot parse frontmatter YAML in %s — status not flipped", task_file.name)
+            return
+
+        if not isinstance(fm_data, dict):
+            logger.warning("Frontmatter in %s is not a mapping — status not flipped", task_file.name)
+            return
+
+        # Find the actual key name used (YAML keys are case-sensitive).
+        # We need to find the line in the raw YAML that sets the status,
+        # so we can replace it while preserving the original key casing.
+        status_key = None
+        for key in fm_data:
+            if key.strip().lower() == "status":
+                status_key = key
+                break
+
+        if status_key is None:
+            raise ValueError(
+                f"No 'status' key found in frontmatter of {task_file.name} — "
+                "this should not happen (caller verified status is pending)."
+            )
+
+        # Replace the status line in the raw YAML text.
+        # Use a regex that matches: <key>: <value> (tolerant of spacing/quoting).
+        pattern = re.compile(
+            r"^(" + re.escape(status_key) + r")\s*:\s*"  # key + colon
+            r'(?:"([^"]*)"|\'([^\']*)\'|(\S+))',          # quoted or unquoted value
+            re.MULTILINE,
         )
+        new_raw = pattern.sub(
+            rf"\1: {TaskStatus.DONE.value}", raw_yaml
+        )
+        if new_raw == raw_yaml:
+            raise ValueError(
+                f"Failed to replace status in {task_file.name}: "
+                f"pattern did not match the status line for key {status_key!r}."
+            )
+
+        # Reconstruct the frontmatter block.
+        new_fm_block = f"---\n{new_raw}\n{trailing}"
         task_file.write_text(new_fm_block + body, encoding="utf-8")
         logger.info("Flipped %s status to done", task_file.name)
 

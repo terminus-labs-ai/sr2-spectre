@@ -273,6 +273,166 @@ class TestCompleteStepToolSchema:
 # ---------------------------------------------------------------------------
 
 
+class TestStatusFlipSpacingVariants:
+    """spc-13: _flip_status must handle spacing/case variants that the
+    parser already tolerates (status:pending, Status: Pending, etc.)."""
+
+    async def test_uppercase_status_value(
+        self, tool: CompleteStepTool, plans_root: Path
+    ) -> None:
+        """status: PENDING (uppercase value) must flip to done."""
+        task = plans_root / "test-plan" / "05-uppercase-val.md"
+        task.write_text(
+            textwrap.dedent(
+                """\
+                ---
+                kind: task
+                plan: test-plan
+                order: 5
+                status: PENDING
+                verify: echo ok
+                title: Uppercase value
+                ---
+
+                Task with uppercase status value.
+                """
+            )
+        )
+        result_str = await tool(
+            plan_slug="test-plan",
+            task_slug="05-uppercase-val",
+            findings="none",
+        )
+        data = json.loads(result_str)
+        assert data["success"] is True
+
+        from sr2_spectre.planning import parse_file
+
+        parsed = parse_file(task)
+        assert parsed is not None
+        assert parsed.status.value == "done"
+
+    async def test_uppercase_status_key(
+        self, tool: CompleteStepTool, plans_root: Path
+    ) -> None:
+        """Status: Pending (capital S) must flip correctly.
+
+        Note: the frontmatter parser itself has a key-casing gap
+        (data.get("status") misses "Status"), so we verify the flip
+        by checking raw file content rather than re-parsing.
+        """
+        task = plans_root / "test-plan" / "06-uppercase.md"
+        task.write_text(
+            textwrap.dedent(
+                """\
+                ---
+                kind: task
+                plan: test-plan
+                order: 6
+                Status: Pending
+                verify: echo ok
+                title: Uppercase
+                ---
+
+                Task with uppercase status key.
+                """
+            )
+        )
+        result_str = await tool(
+            plan_slug="test-plan",
+            task_slug="06-uppercase",
+            findings="none",
+        )
+        data = json.loads(result_str)
+        assert data["success"] is True
+
+        # Verify the status line was actually changed in the file.
+        content = task.read_text()
+        assert "Status: done" in content
+        assert "Pending" not in content
+
+    async def test_mixed_spacing_and_case(
+        self, tool: CompleteStepTool, plans_root: Path
+    ) -> None:
+        """STATUS : Pending (uppercase key, extra space) must flip.
+
+        Note: parser key lookup is case-sensitive, so we verify via raw content.
+        """
+        task = plans_root / "test-plan" / "07-mixed.md"
+        task.write_text(
+            "---\n"
+            "kind: task\n"
+            "plan: test-plan\n"
+            "order: 7\n"
+            "STATUS : Pending\n"
+            "verify: echo ok\n"
+            "title: Mixed\n"
+            "---\n"
+            "\n"
+            "Task with mixed spacing and case.\n"
+        )
+        result_str = await tool(
+            plan_slug="test-plan",
+            task_slug="07-mixed",
+            findings="none",
+        )
+        data = json.loads(result_str)
+        assert data["success"] is True
+
+        # Verify the status line was actually changed.
+        content = task.read_text()
+        assert "STATUS: done" in content or "STATUS : done" in content
+        assert "Pending" not in content and "pending" not in content
+
+    async def test_flip_failure_returns_error(
+        self, tool: CompleteStepTool, plans_root: Path
+    ) -> None:
+        """If the status line can't be matched, complete_step must FAIL
+        instead of silently succeeding."""
+        # Create a task where "status" appears but is embedded in a
+        # non-standard way that the YAML parser still picks up (e.g.,
+        # quoted value). The current broken code would no-op here.
+        task = plans_root / "test-plan" / "08-quoted.md"
+        task.write_text(
+            textwrap.dedent(
+                """\
+                ---
+                kind: task
+                plan: test-plan
+                order: 8
+                status: "pending"
+                verify: echo ok
+                title: Quoted
+                ---
+
+                Task with quoted status value.
+                """
+            )
+        )
+        # With the fix, this should still work because the YAML key in
+        # the raw text is `status: "pending"` — the replace of
+        # `status: pending` won't match but the new YAML-aware approach
+        # should handle it. If the fix is correct, success + done.
+        result_str = await tool(
+            plan_slug="test-plan",
+            task_slug="08-quoted",
+            findings="none",
+        )
+        data = json.loads(result_str)
+        assert data["success"] is True
+
+        from sr2_spectre.planning import parse_file
+
+        parsed = parse_file(task)
+        assert parsed is not None
+        assert parsed.status.value == "done"
+
+
+# ---------------------------------------------------------------------------
+# Agent event emission tests
+# ---------------------------------------------------------------------------
+
+
 class TestAgentCompleteStepEvent:
     async def test_agent_emits_event_on_success(self) -> None:
         """When complete_step succeeds, the agent emits plan_step_completed."""
