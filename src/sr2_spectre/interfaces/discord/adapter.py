@@ -1,0 +1,248 @@
+"""Discord adapter — bridges discord.py objects to handler types.
+
+This layer contains all discord.py imports. The handler and session_map
+modules are engine-independent and testable without discord.py installed.
+
+The adapter:
+- Wraps the discord.py bot client lifecycle (start/stop/reconnect)
+- Converts discord.Message objects to plain Python types
+- Sends messages/embeds through the discord.py API
+- Handles message edits for streaming simulation
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import TYPE_CHECKING, Any
+
+from sr2_spectre.interfaces.discord.config import DiscordConfig
+
+logger = logging.getLogger(__name__)
+
+# discord.py is optional — import lazily so tests can run without it
+_discord: Any = None
+
+
+def _import_discord() -> Any:
+    """Import discord.py, raising ImportError if unavailable."""
+    global _discord
+    if _discord is None:
+        try:
+            import discord as _discord
+        except ImportError:
+            raise ImportError(
+                "discord.py is required for the Discord interface. "
+                "Install it with: pip install discord"
+            )
+    return _discord
+
+
+class DiscordBotAdapter:
+    """Wraps discord.py's Bot client for the Spectre interface.
+
+    Manages bot lifecycle (login, run, close) and provides methods
+    for sending messages, editing messages, and sending embeds.
+
+    The adapter is designed so the Interface can control the bot
+    lifecycle without the bot controlling the interface.
+    """
+
+    def __init__(self, config: DiscordConfig) -> None:
+        self.config = config
+        self._bot: Any = None
+        self._running = False
+        self._task: asyncio.Task | None = None
+
+    @property
+    def bot_id(self) -> int | None:
+        """Return the bot's Discord user ID, or None if not connected."""
+        if self._bot is None:
+            return None
+        user = getattr(self._bot, "user", None)
+        if user is not None:
+            return getattr(user, "id", None)
+        return None
+
+    @property
+    def bot_mentions(self) -> list[str] | None:
+        """Return pre-rendered mention strings for the bot."""
+        if self._bot is None:
+            return None
+        user = getattr(self._bot, "user", None)
+        if user is not None and hasattr(user, "mention"):
+            return [user.mention, f"<@!{user.id}>" if hasattr(user, 'id') else None]
+        return None
+
+    async def start(self) -> None:
+        """Start the discord.py bot client.
+
+        Creates the Bot instance and begins the connection.
+        Blocks until the bot is ready or an error occurs.
+        """
+        if not self.config.token:
+            raise ValueError("Discord bot token is required. Set discord.token in config.")
+
+        discord = _import_discord()
+
+        intents = discord.Intents.default()
+        intents.message_content = True  # Required to read message content
+
+        self._bot = discord.Bot(intents=intents)
+        self._running = True
+
+        # Register the on_message handler
+        self._bot.remove_command("help")  # Remove default help to avoid conflicts
+
+        @self._bot.event
+        async def on_ready() -> None:
+            user = self._bot.user
+            logger.info("Discord bot logged in as %s (ID: %s)", user.name, user.id)
+
+        # Store the handler reference so the interface can set it
+        self._on_message_handler = None
+
+        @self._bot.event
+        async def on_message(message: Any) -> None:
+            # Skip bot's own messages
+            if message.author == self._bot.user:
+                await self._bot.process_commands(message)
+                return
+
+            # Skip DMs if channels are configured (server-only mode)
+            if self.config.channels and not hasattr(message, "channel"):
+                return
+
+            # Channel filter
+            if self.config.channels and message.channel.id not in self.config.channels:
+                return
+
+            if self._on_message_handler is not None:
+                await self._on_message_handler(message)
+
+            await self._bot.process_commands(message)
+
+    def set_message_handler(self, handler: Any) -> None:
+        """Set the message handler callback for incoming messages.
+
+        The handler should be an async function that accepts a
+        discord.Message object.
+        """
+        self._on_message_handler = handler
+
+    async def run(self) -> None:
+        """Run the bot until stopped."""
+        if self._bot is None:
+            raise RuntimeError("Call start() before run()")
+        await self._bot.start(self.config.token)
+
+    async def stop(self) -> None:
+        """Stop the bot client gracefully."""
+        self._running = False
+        if self._bot is not None:
+            await self._bot.close()
+
+    async def send_message(
+        self,
+        channel_id: int,
+        content: str,
+    ) -> Any:
+        """Send a message to a channel by ID.
+
+        Returns the discord.Message object, or None if the channel
+        couldn't be resolved.
+        """
+        if self._bot is None:
+            logger.error("Bot not initialized — cannot send message")
+            return None
+
+        channel = self._bot.get_channel(channel_id)
+        if channel is None:
+            # Try fetching the channel
+            try:
+                channel = await self._bot.fetch_channel(channel_id)
+            except Exception as exc:
+                logger.error("Could not fetch channel %d: %s", channel_id, exc)
+                return None
+
+        try:
+            message = await channel.send(content)
+            return message
+        except Exception as exc:
+            logger.error("Failed to send message to channel %d: %s", channel_id, exc)
+            return None
+
+    async def edit_message(
+        self,
+        channel_id: int,
+        message_id: int,
+        content: str,
+    ) -> Any:
+        """Edit an existing message.
+
+        Used for streaming simulation — progressively updating a message
+        as the agent generates text.
+        """
+        if self._bot is None:
+            return None
+
+        channel = self._bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self._bot.fetch_channel(channel_id)
+            except Exception as exc:
+                logger.error("Could not fetch channel %d: %s", channel_id, exc)
+                return None
+
+        try:
+            message = await channel.fetch_message(message_id)
+            await message.edit(content=content)
+            return message
+        except Exception as exc:
+            logger.error("Failed to edit message %d in channel %d: %s", message_id, channel_id, exc)
+            return None
+
+    async def send_embed(
+        self,
+        channel_id: int,
+        embed_dict: dict,
+    ) -> Any:
+        """Send a message with an embed.
+
+        Args:
+            channel_id: Discord channel ID.
+            embed_dict: Embed dict compatible with discord.Embed.from_dict().
+
+        Returns:
+            The discord.Message object, or None on failure.
+        """
+        if self._bot is None:
+            return None
+
+        discord = _import_discord()
+        embed = discord.Embed.from_dict(embed_dict)
+
+        return await self.send_embed_raw(channel_id, embed)
+
+    async def send_embed_raw(
+        self,
+        channel_id: int,
+        embed: Any,
+    ) -> Any:
+        """Send a message with a pre-built discord.Embed object."""
+        if self._bot is None:
+            return None
+
+        channel = self._bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self._bot.fetch_channel(channel_id)
+            except Exception as exc:
+                logger.error("Could not fetch channel %d: %s", channel_id, exc)
+                return None
+
+        try:
+            message = await channel.send(embed=embed)
+            return message
+        except Exception as exc:
+            logger.error("Failed to send embed to channel %d: %s", channel_id, exc)
+            return None

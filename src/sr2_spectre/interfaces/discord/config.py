@@ -1,0 +1,39 @@
+"""Discord interface configuration model.
+
+DiscordConfig is a pydantic model that holds all Discord-specific
+configuration. It is intended to be nested under agent.discord in the
+SpectreConfig (or loaded as a standalone config block).
+"""
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class DiscordConfig(BaseModel):
+    """Configuration for the Discord interface.
+
+    Attributes:
+        token: Discord bot token (required for a real connection; can be
+               empty for tests that mock the bot client).
+        channels: List of channel IDs to monitor. Empty list means all
+                  text channels the bot has access to.
+        mention_only: If True, only respond when the bot is mentioned
+                      (via @BotName or <@BotID>). If False, respond to
+                      every message in configured channels.
+        max_message_length: Maximum length of a single Discord message
+                            sent by the bot. Discord hard limit is 2000.
+        edit_stream_interval: Seconds between message edits when
+                              simulating streaming output. Set to 0 to
+                              disable streaming edits (send one final
+                              message instead).
+        tool_embed_enabled: Whether to send tool execution updates as
+                            Discord embeds.
+    """
+    token: str = ""
+    channels: list[int] = Field(default_factory=list)
+    mention_only: bool = False
+    max_message_length: int = 2000
+    edit_stream_interval: float = 1.0
+    tool_embed_enabled: bool = True

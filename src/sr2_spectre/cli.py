@@ -163,6 +163,7 @@ def _load_interface(interface_name: str, **kwargs: Any) -> Any:
     known_interfaces = {
         "single_shot": "sr2_spectre.interfaces.single_shot.SingleShotInterface",
         "tui": "sr2_spectre.interfaces.tui.TUIInterface",
+        "discord": "sr2_spectre.interfaces.discord.interface.DiscordInterface",
     }
 
     class_path = known_interfaces.get(interface_name, interface_name)

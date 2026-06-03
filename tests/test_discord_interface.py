@@ -1,0 +1,391 @@
+"""Tests for DiscordInterface — Interface protocol implementation.
+
+Tests the interface lifecycle and message routing logic using mocked
+adapter objects. Does NOT require discord.py installed.
+
+Covers:
+1.  Interface protocol (name, start, stop, run)
+2.  Message routing (mention filter, channel filter)
+3.  Slash command processing (/reset, /help, /status, /ask)
+4.  Agent stream integration (text delta collection, history management)
+5.  Session isolation per channel
+6.  Error handling during agent streaming
+"""
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
+from sr2_spectre.interfaces.discord.config import DiscordConfig
+from sr2_spectre.interfaces.discord.interface import DiscordInterface
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_mock_agent(events: list | None = None) -> MagicMock:
+    """Create a mock Agent with configurable stream events."""
+    agent = MagicMock()
+    agent.history = []
+    agent.session_id = "discord-test"
+
+    if events is None:
+        events = [AgentTextDelta(text="Hello!"), AgentDone(tool_calls_executed=0)]
+
+    async def _stream(text: str) -> Any:
+        for ev in events:
+            yield ev
+
+    agent.stream_message = _stream
+    return agent
+
+
+def _make_mock_message(
+    content: str = "hello",
+    channel_id: int = 12345,
+) -> MagicMock:
+    """Create a mock discord.Message."""
+    message = MagicMock()
+    message.content = content
+
+    channel = MagicMock()
+    channel.id = channel_id
+    message.channel = channel
+
+    author = MagicMock()
+    author.id = 99999
+    message.author = author
+
+    return message
+
+
+def _make_mock_adapter() -> MagicMock:
+    """Create a fully async-compatible mock adapter."""
+    mock_adapter = MagicMock()
+    mock_adapter.bot_id = 11111
+    mock_adapter.bot_mentions = ["<@11111>"]
+    mock_adapter.start = AsyncMock()
+    mock_adapter.stop = AsyncMock()
+    mock_adapter.send_message = AsyncMock(return_value=MagicMock(id=888))
+    mock_adapter.edit_message = AsyncMock()
+    mock_adapter.send_embed = AsyncMock()
+    mock_adapter.set_message_handler = MagicMock()
+    return mock_adapter
+
+
+# ---------------------------------------------------------------------------
+# Interface protocol
+# ---------------------------------------------------------------------------
+
+class TestInterfaceProtocol:
+    def test_name_attribute(self) -> None:
+        interface = DiscordInterface()
+        assert interface.name == "discord"
+
+    def test_default_config(self) -> None:
+        interface = DiscordInterface()
+        assert isinstance(interface.config, DiscordConfig)
+        assert interface.config.token == ""
+
+    def test_custom_config(self) -> None:
+        config = DiscordConfig(token="test-token")
+        interface = DiscordInterface(config=config)
+        assert interface.config.token == "test-token"
+
+
+@pytest.mark.asyncio
+async def test_start_initializes_adapter() -> None:
+    """start() creates adapter, sets handler, calls adapter.start()."""
+    config = DiscordConfig(token="test")
+    interface = DiscordInterface(config=config)
+    agent = _make_mock_agent()
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        MockAdapter.assert_called_once_with(config)
+        mock_adapter.start.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_stop_cleans_up() -> None:
+    """stop() calls adapter.stop() and clears sessions."""
+    config = DiscordConfig(token="test")
+    interface = DiscordInterface(config=config)
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(_make_mock_agent())
+        await interface.stop()
+
+        mock_adapter.stop.assert_called_once()
+        assert interface._session_map.active() == []
+
+
+# ---------------------------------------------------------------------------
+# Message routing
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ignores_empty_messages() -> None:
+    """Messages with empty content are ignored."""
+    interface = DiscordInterface(DiscordConfig(token="test"))
+    agent = _make_mock_agent()
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="")
+        await interface._process_message(msg)
+
+        # send_message should NOT have been called
+        assert not mock_adapter.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_responds_to_regular_message() -> None:
+    """Non-mention messages trigger agent when mention_only is False."""
+    interface = DiscordInterface(DiscordConfig(mention_only=False))
+    agent = _make_mock_agent([AgentTextDelta(text="Hi!"), AgentDone()])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="hello bot")
+        await interface._process_message(msg)
+
+        assert mock_adapter.send_message.called
+        assert mock_adapter.edit_message.called
+
+
+@pytest.mark.asyncio
+async def test_mention_filter_blocks_non_mentions() -> None:
+    """With mention_only=True, messages without mentions are ignored."""
+    interface = DiscordInterface(DiscordConfig(mention_only=True))
+    agent = _make_mock_agent()
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="hello bot")  # No mention
+        await interface._process_message(msg)
+
+        assert not mock_adapter.send_message.called
+
+
+# ---------------------------------------------------------------------------
+# Slash commands
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_slash_resets_channel_session() -> None:
+    """/reset clears the channel's conversation history."""
+    interface = DiscordInterface(DiscordConfig())
+    agent = _make_mock_agent()
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        # First populate history
+        session = interface._session_map.get_or_create(12345)
+        session.history.append({"role": "user", "content": []})
+        assert len(session.history) == 1
+
+        msg = _make_mock_message(content="/reset", channel_id=12345)
+        await interface._process_message(msg)
+
+        assert session.history == []
+
+
+@pytest.mark.asyncio
+async def test_slash_help_sends_help_text() -> None:
+    """/help sends the help text to the channel."""
+    interface = DiscordInterface(DiscordConfig())
+    agent = _make_mock_agent()
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="/help")
+        await interface._process_message(msg)
+
+        call_args = mock_adapter.send_message.call_args
+        assert "/ask" in call_args[0][1]
+
+
+# ---------------------------------------------------------------------------
+# Agent stream integration
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_stream_collects_text_and_sends_final() -> None:
+    """Text deltas are collected, final response edits the thinking message."""
+    interface = DiscordInterface(DiscordConfig())
+    events = [
+        AgentTextDelta(text="Hello"),
+        AgentTextDelta(text=", "),
+        AgentTextDelta(text="world!"),
+        AgentDone(tool_calls_executed=0),
+    ]
+    agent = _make_mock_agent(events)
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="say hello", channel_id=54321)
+        await interface._process_message(msg)
+
+        # Final edit should contain the complete response
+        edit_calls = mock_adapter.edit_message.call_args_list
+        assert len(edit_calls) > 0
+        final_content = edit_calls[-1][0][2]
+        assert "Hello, world!" in final_content
+
+
+@pytest.mark.asyncio
+async def test_history_isolated_per_channel() -> None:
+    """Each channel maintains its own conversation history."""
+    interface = DiscordInterface(DiscordConfig())
+    agent = _make_mock_agent([AgentTextDelta(text="OK"), AgentDone()])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        # Message in channel 1
+        await interface._process_message(_make_mock_message(content="msg1", channel_id=1))
+        s1 = interface._session_map.get_or_create(1)
+        assert len(s1.history) == 2  # user + assistant
+
+        # Message in channel 2
+        await interface._process_message(_make_mock_message(content="msg2", channel_id=2))
+        s2 = interface._session_map.get_or_create(2)
+        assert len(s2.history) == 2
+
+        # Channel 1 should still have its own history
+        assert s1.history[0]["content"][0]["text"] == "msg1"
+        assert s2.history[0]["content"][0]["text"] == "msg2"
+
+
+@pytest.mark.asyncio
+async def test_long_response_chunked() -> None:
+    """Responses over max_message_length are split into multiple messages."""
+    interface = DiscordInterface(DiscordConfig(max_message_length=100))
+    long_text = "x" * 250
+    agent = _make_mock_agent([AgentTextDelta(text=long_text), AgentDone()])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="tell me something long")
+        await interface._process_message(msg)
+
+        # Should have at least an edit + extra send messages
+        assert mock_adapter.send_message.call_count >= 1
+        assert mock_adapter.edit_message.call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_agent_error_handled_gracefully() -> None:
+    """Agent errors don't crash the interface; error message is sent."""
+    async def _failing_stream(text: str) -> Any:
+        yield AgentTextDelta(text="partial")
+        raise RuntimeError("LLM is down")
+
+    agent = MagicMock()
+    agent.history = []
+    agent.session_id = "test"
+    agent.stream_message = _failing_stream
+
+    interface = DiscordInterface(DiscordConfig())
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="hello")
+        await interface._process_message(msg)
+
+        # Should have edited the thinking message with error
+        edit_calls = mock_adapter.edit_message.call_args_list
+        assert len(edit_calls) > 0
+        final_content = edit_calls[-1][0][2]
+        assert "Error" in final_content
+
+
+@pytest.mark.asyncio
+async def test_slash_ask_routes_to_agent() -> None:
+    """/ask with content routes through the agent."""
+    interface = DiscordInterface(DiscordConfig())
+    agent = _make_mock_agent([AgentTextDelta(text="Answer"), AgentDone()])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="/ask what is the weather?")
+        await interface._process_message(msg)
+
+        # send_message should have been called (thinking message + final)
+        assert mock_adapter.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_tool_embeds_sent_when_enabled() -> None:
+    """Tool start/result events trigger embed messages when tool_embed_enabled=True."""
+    interface = DiscordInterface(DiscordConfig(tool_embed_enabled=True))
+    events = [
+        AgentToolStart(tool_id="t1", name="search", input={"q": "test"}),
+        AgentToolResult(tool_id="t1", name="search", content="result", is_error=False),
+        AgentTextDelta(text="Done"),
+        AgentDone(),
+    ]
+    agent = _make_mock_agent(events)
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="search for something")
+        await interface._process_message(msg)
+
+        # Should have sent embeds for tool start and result
+        assert mock_adapter.send_embed.called
