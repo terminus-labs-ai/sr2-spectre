@@ -13,6 +13,7 @@ Usage: sr2-spectre config.yaml --interface tui
 from __future__ import annotations
 
 import json
+import os
 import sys
 from contextlib import nullcontext
 from pathlib import Path
@@ -21,6 +22,7 @@ from typing import TYPE_CHECKING
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
 
+from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
 
 if TYPE_CHECKING:
@@ -154,8 +156,13 @@ class TUIInterface:
         self._session: PromptSession | None = None
 
     async def start(self, agent: "Agent") -> None:
-        """Initialize TUI."""
+        """Initialize TUI and set interactive run context."""
         self._running = True
+        agent.set_run_context(RunContext(
+            interface="tui",
+            mode=RunMode.INTERACTIVE,
+            source=os.getcwd(),
+        ))
 
     async def stop(self) -> None:
         """Signal the run loop to exit."""

@@ -23,7 +23,7 @@ from sr2.pipeline.events import Event, EventPhase
 from sr2.pipeline.token_counting import CharacterTokenCounter
 
 from sr2_spectre.config import SpectreConfig
-from sr2_spectre.core import TurnResult
+from sr2_spectre.core import RunContext, TurnResult
 from sr2_spectre.events import (
     AgentDone,
     AgentEvent,
@@ -70,6 +70,18 @@ class Session:
             tracer=tracer,
             tool_executor=self._execute_tool,
         )
+
+        # Run context — set by the Interface at start(); None until then.
+        self._run_context: RunContext | None = None
+
+    @property
+    def run_context(self) -> RunContext | None:
+        """Return the run context set by the Interface, or None."""
+        return self._run_context
+
+    def set_run_context(self, ctx: RunContext) -> None:
+        """Set the run context. Called by the Interface during start()."""
+        self._run_context = ctx
 
     async def _execute_tool(self, block: ToolUseBlock) -> ToolResultBlock:
         """SR2 tool_executor callback. Executes a tool via the shared registry.

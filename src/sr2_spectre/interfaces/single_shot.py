@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sr2_spectre.agent import Agent
 
+from sr2_spectre.core import RunContext, RunMode
+
 
 class SingleShotInterface:
     name = "single_shot"
@@ -18,8 +20,12 @@ class SingleShotInterface:
         self._prompt = prompt
 
     async def start(self, agent: "Agent") -> None:
-        """No startup needed."""
-        pass
+        """Set headless run context."""
+        agent.set_run_context(RunContext(
+            interface="single_shot",
+            mode=RunMode.HEADLESS,
+            source=None,
+        ))
 
     async def stop(self) -> None:
         """No shutdown needed."""

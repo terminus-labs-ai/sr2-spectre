@@ -8,10 +8,10 @@ from sr2_spectre.core import TurnResult
 
 
 def _make_agent(response_text: str = "The answer is 4") -> MagicMock:
-    agent = AsyncMock()
-    agent.handle_user_message.return_value = TurnResult(
+    agent = MagicMock()
+    agent.handle_user_message = AsyncMock(return_value=TurnResult(
         text=response_text, tool_calls_executed=0, total_tokens=30
-    )
+    ))
     return agent
 
 

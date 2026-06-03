@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 from sr2.pipeline.events import Event, EventPhase
 from sr2.models import ToolResultBlock
 from sr2_spectre.config import SpectreConfig
-from sr2_spectre.core import TurnResult
+from sr2_spectre.core import RunContext, TurnResult
 from sr2_spectre.events import AgentEvent
 from sr2_spectre.runtime import Runtime
 
@@ -146,6 +146,17 @@ class Agent:
     def _execute_tool(self) -> Any:
         """Tool executor callback (delegated to Session). Kept for test backward compat."""
         return self._session._execute_tool
+
+    # ---- Run context delegation ----
+
+    @property
+    def run_context(self) -> RunContext | None:
+        """Return the run context set by the Interface, or None."""
+        return self._session.run_context
+
+    def set_run_context(self, ctx: RunContext) -> None:
+        """Set the run context. Called by the Interface during start()."""
+        self._session.set_run_context(ctx)
 
     # ---- Delegated methods ----
 

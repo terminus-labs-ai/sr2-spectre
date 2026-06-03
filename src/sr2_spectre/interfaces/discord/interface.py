@@ -23,6 +23,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
 from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
 from sr2_spectre.interfaces.discord.config import DiscordConfig
@@ -64,6 +65,13 @@ class DiscordInterface:
         self._agent = agent
         self._adapter = DiscordBotAdapter(self.config)
         self._running = True
+
+        # Set interactive run context for Discord
+        agent.set_run_context(RunContext(
+            interface="discord",
+            mode=RunMode.INTERACTIVE,
+            source=None,  # channel-specific source set per-message in handler
+        ))
 
         # Set up the message handler
         async def _handle_message(message: Any) -> None:
