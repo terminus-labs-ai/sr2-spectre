@@ -27,6 +27,7 @@ from sr2.pipeline.models import ResolvedContent
 from sr2.pipeline.token_counting import CHARS_PER_TOKEN
 from sr2.pipeline.utils import PHASE_MAP, build_subscriptions
 
+from sr2_spectre.planning.budget import LayerBudget
 from sr2_spectre.planning.frontmatter import (
     parse_file,
     parse_frontmatter,
@@ -532,98 +533,17 @@ class PlanResolver:
         layers: list[tuple[str, str]],
         max_tokens: int,
     ) -> list[tuple[str, str]]:
-        """Enforce token budget by dropping layers from lowest to highest priority.
+        """Enforce token budget via LayerBudget allocator.
 
-        Drop order: L1 (project knowledge) → L2 (plan) → L3 (task, most protected).
-        If L3 alone exceeds budget, truncate L3 tail with a notice.
-
-        Returns a (possibly reduced) list of (header, content) tuples.
+        Delegates to :class:`LayerBudget` which handles priority-aware
+        eviction and tail truncation.
         """
-        max_chars = max_tokens * CHARS_PER_TOKEN
-
-        # Total chars includes header + content per layer + separator overhead
-        total_chars = sum(len(h) + len(c) for h, c in layers)
-        separator_overhead = max(0, len(layers) - 1) * len(_LAYER_SEPARATOR)
-
-        if total_chars + separator_overhead <= max_chars:
-            return layers  # fits within budget — no truncation needed
-
-        # Sort layers by priority (highest priority number = dropped first).
-        # Use enumerate to preserve original order for equal priority.
-        indexed_layers: list[tuple[int, str, str]] = [
-            (i, h, c) for i, (h, c) in enumerate(layers)
+        # Map (header, content) → (header, content, priority).
+        prioritized: list[tuple[str, str, int]] = [
+            (h, c, _LAYER_PRIORITY.get(h, 0)) for h, c in layers
         ]
-        indexed_layers.sort(
-            key=lambda t: (-_LAYER_PRIORITY.get(t[1], 0), t[0])
-        )
-
-        # Iteratively drop lowest-priority layers until budget fits.
-        # Stop dropping when only one layer remains — that last layer gets
-        # tail-truncated instead of dropped entirely.
-        remaining = list(layers)
-        for _idx, header, _content in indexed_layers:
-            if len(remaining) <= 1:
-                break  # Don't drop the last layer — truncate it instead
-
-            # Remove this layer from remaining
-            candidate = [(h, c) for h, c in remaining if h != header]
-            candidate_chars = sum(len(h) + len(c) for h, c in candidate)
-            # Account for separator overhead
-            sep_overhead = max(0, len(candidate) - 1) * len(_LAYER_SEPARATOR)
-            total = candidate_chars + sep_overhead
-
-            if total <= max_chars:
-                # Log what was dropped
-                layer_name = header.replace("## ", "")
-                logger.info(
-                    "Token budget exceeded: dropped %s layer.",
-                    layer_name,
-                )
-                remaining = candidate
-                break
-            # Doesn't fit yet — keep this layer removed and try dropping the next one
-            remaining = candidate
-
-        # If the remaining layers still exceed budget, truncate the last remaining layer
-        if remaining:
-            rem_total = sum(len(h) + len(c) for h, c in remaining)
-            rem_sep = max(0, len(remaining) - 1) * len(_LAYER_SEPARATOR)
-            if rem_total + rem_sep > max_chars:
-                remaining = self._truncate_last_layer(remaining, max_tokens)
-
-        return remaining
-
-    @staticmethod
-    def _truncate_last_layer(
-        layers: list[tuple[str, str]],
-        max_tokens: int,
-    ) -> list[tuple[str, str]]:
-        """Truncate the last remaining layer's content from the tail.
-
-        Used as a last resort when even dropping all lower-priority layers
-        doesn't fit the budget. Truncates the content of the highest-priority
-        remaining layer, preserving the header.
-        """
-        max_chars = max_tokens * CHARS_PER_TOKEN
-        notice = "\n\n⚠️ Content truncated — token budget exceeded."
-
-        if not layers:
-            return []
-
-        # Find the highest-priority layer to truncate (lowest priority number)
-        # Prefer L3 > L2 > L1. Among equal priority, truncate last one.
-        truncate_idx = max(
-            range(len(layers)),
-            key=lambda i: (-_LAYER_PRIORITY.get(layers[i][0], 0), i),
-        )
-
-        header, content = layers[truncate_idx]
-        available = max(0, max_chars - len(header) - len(notice))
-
-        if len(content) > available:
-            layers[truncate_idx] = (header, content[:available] + notice)
-
-        return layers
+        budget = LayerBudget(max_tokens=max_tokens)
+        return budget.allocate(prioritized)
 
 
 # ---------------------------------------------------------------------------

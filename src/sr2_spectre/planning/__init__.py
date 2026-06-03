@@ -6,6 +6,7 @@ the LLM context each turn. Planning is a Spectre concern (not SR2 core); the
 resolver plugs into SR2 via the ``sr2.resolvers`` entry point.
 
 Public API:
+  - ``LayerBudget`` — priority-aware token-budget allocator (pure logic).
   - ``PlanResolver`` / ``PlanResolverError`` — the dynamic resolver.
   - frontmatter parsing (``parse_file``, ``parse_frontmatter``,
     ``extract_raw_frontmatter``) and the frozen frontmatter models.
@@ -13,6 +14,7 @@ Public API:
 
 from __future__ import annotations
 
+from sr2_spectre.planning.budget import LayerBudget
 from sr2_spectre.planning.frontmatter import (
     extract_raw_frontmatter,
     parse_file,
@@ -32,6 +34,7 @@ from sr2_spectre.planning.models import (
 from sr2_spectre.planning.resolver import PlanResolver, PlanResolverError
 
 __all__ = [
+    "LayerBudget",
     "PlanResolver",
     "PlanResolverError",
     "extract_raw_frontmatter",
