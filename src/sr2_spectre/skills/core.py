@@ -27,16 +27,19 @@ class Skill:
         description: One-line description of what this skill teaches.
         version: Semantic version string (e.g., "0.1.0").
         content: The full text content injected when the skill is loaded.
-        tags: Keywords for filtering/categorization (e.g., ["sr2", "planning"]).
+        tags: Keywords for filtering/categorization (immutable tuple).
     """
 
     name: str
     description: str
     version: str = "0.1.0"
     content: str = ""
-    tags: list[str] = field(default_factory=list)
+    tags: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        # Enforce true immutability: convert mutable sequences to tuple.
+        # Frozen dataclasses allow __set_attribute__ in __post_init__.
+        object.__setattr__(self, "tags", tuple(self.tags))
         if not self.name:
             raise ValueError("Skill name must not be empty")
         if not self.description:
@@ -48,7 +51,7 @@ def load_skill_from_path(
     path: str | Path,
     version: str = "0.1.0",
     description: str = "",
-    tags: list[str] | None = None,
+    tags: list[str] | tuple[str, ...] | None = None,
 ) -> Skill:
     """Load a skill's content from a file on disk.
 
@@ -78,7 +81,7 @@ def load_skill_from_path(
         description=description,
         version=version,
         content=content,
-        tags=tags or [],
+        tags=tuple(tags) if tags else (),
     )
 
 

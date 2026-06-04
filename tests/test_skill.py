@@ -29,7 +29,7 @@ class TestSkillConstruction:
         assert skill.description == "A test skill"
         assert skill.version == "0.1.0"
         assert skill.content == ""
-        assert skill.tags == []
+        assert skill.tags == ()
 
     def test_full_skill(self):
         skill = Skill(
@@ -41,7 +41,7 @@ class TestSkillConstruction:
         )
         assert skill.version == "1.2.3"
         assert skill.content == "some content"
-        assert skill.tags == ["a", "b"]
+        assert skill.tags == ("a", "b")
 
     def test_empty_name_raises(self):
         with pytest.raises(ValueError, match="name must not be empty"):
@@ -56,6 +56,22 @@ class TestSkillConstruction:
         with pytest.raises(Exception):  # FrozenInstanceError
             skill.name = "other"  # type: ignore[frozen-instantiation]
 
+    def test_tags_are_immutable_tuple(self):
+        """tags is stored as a tuple, even when constructed from a list."""
+        # Pass a list — should be converted to tuple
+        skill = Skill(name="test", description="desc", tags=["a", "b"])
+        assert isinstance(skill.tags, tuple)
+        assert skill.tags == ("a", "b")
+        # Cannot mutate (frozen dataclass raises FrozenInstanceError)
+        with pytest.raises(Exception):  # FrozenInstanceError
+            skill.tags += ("c",)  # type: ignore[unreachable]
+
+    def test_tags_empty_by_default(self):
+        """Default tags is an empty tuple, not a list."""
+        skill = Skill(name="test", description="desc")
+        assert skill.tags == ()
+        assert isinstance(skill.tags, tuple)
+
 
 # ---------------------------------------------------------------------------
 # SkillRegistry
@@ -69,13 +85,13 @@ class TestSkillRegistry:
         name: str = "test",
         description: str = "Test skill",
         content: str = "content here",
-        tags: list[str] | None = None,
+        tags: tuple[str, ...] | None = None,
     ) -> Skill:
         return Skill(
             name=name,
             description=description,
             content=content,
-            tags=tags or [],
+            tags=tags or (),
         )
 
     def test_register_and_get(self):
@@ -107,9 +123,9 @@ class TestSkillRegistry:
 
     def test_find_by_tag(self):
         registry = SkillRegistry()
-        registry.register(self._make_skill(name="a", tags=["sr2", "core"]))
-        registry.register(self._make_skill(name="b", tags=["planning"]))
-        registry.register(self._make_skill(name="c", tags=["sr2", "planning"]))
+        registry.register(self._make_skill(name="a", tags=("sr2", "core")))
+        registry.register(self._make_skill(name="b", tags=("planning",)))
+        registry.register(self._make_skill(name="c", tags=("sr2", "planning")))
 
         assert len(registry.find_by_tag("sr2")) == 2
         assert len(registry.find_by_tag("planning")) == 2
@@ -151,7 +167,7 @@ class TestLoadSkillFromPath:
             name="my-skill",
             path=content_file,
             description="A skill from disk",
-            tags=["disk"],
+            tags=["disk"],  # load_skill_from_path accepts list, converts to tuple
         )
 
         assert skill.name == "my-skill"
