@@ -209,20 +209,10 @@ class _MockLLMRecorder:
 class TestEndToEnd:
     @pytest.fixture(autouse=False)
     def reset_registries(self):
-        import sr2.orchestrator as orch
-        def _reset():
-            orch._RESOLVERS._discovered = False
-            orch._RESOLVERS._classes = {}
-            orch._RESOLVERS._collisions = {}
-            orch._TRANSFORMERS._discovered = False
-            orch._TRANSFORMERS._classes = {}
-            orch._TRANSFORMERS._collisions = {}
-            orch._TOOL_PROVIDERS._discovered = False
-            orch._TOOL_PROVIDERS._classes = {}
-            orch._TOOL_PROVIDERS._collisions = {}
-        _reset()
+        from sr2.orchestrator import reset_discovery as _reset_discovery
+        _reset_discovery()
         yield
-        _reset()
+        _reset_discovery()
 
     def _ep_side_effect(self, registry: ToolRegistry):
         from sr2_spectre.providers import SpectreToolProvider
