@@ -105,6 +105,34 @@ def _run_config_show(argv: list[str]) -> int:
     return 1 if errors else 0
 
 
+def resolve_agent_config_path(
+    agent_name: str,
+    agents_dir: Path | None = None,
+) -> Path:
+    """Resolve an agent name to its config YAML path.
+
+    ``--agent edi`` → ``<agents_dir>/edi.yaml``
+
+    Args:
+        agent_name: Short agent name (e.g. "edi", "liara").
+        agents_dir: Directory containing agent YAML files. Defaults to
+            ``~/.sr2/agents/``.
+
+    Returns:
+        Absolute resolved Path to the agent's YAML config file.
+
+    Raises:
+        FileNotFoundError: If the resolved YAML file does not exist.
+    """
+    if agents_dir is None:
+        agents_dir = Path.home() / ".sr2" / "agents"
+    else:
+        agents_dir = Path(agents_dir).expanduser().resolve()
+
+    config_path = agents_dir / f"{agent_name}.yaml"
+    return config_path.resolve()
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="sr2-spectre",
@@ -115,12 +143,25 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to YAML config file (required)",
     )
     parser.add_argument(
+        "--agent",
+        type=str,
+        default=None,
+        help="Agent name shorthand — resolves to <agents_dir>/<name>.yaml. "
+             "Agents dir defaults to ~/.sr2/agents/ (override with --agents-dir).",
+    )
+    parser.add_argument(
+        "--agents-dir",
+        type=str,
+        default=None,
+        help="Directory containing agent YAML files (default: ~/.sr2/agents/)",
+    )
+    parser.add_argument(
         "--interface",
         type=str,
         default="single_shot",
         help="Interface to run: single_shot, tui (default: single_shot)",
     )
- 
+
     parser.add_argument(
         "--session-id",
         type=str,
@@ -210,10 +251,18 @@ async def run_async(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     _configure_logging(args.log_level, args.log_file)
 
+    # Resolve the effective config path: --agent shorthand overrides positional arg.
+    if args.agent:
+        config_path = resolve_agent_config_path(
+            args.agent, agents_dir=Path(args.agents_dir) if args.agents_dir else None
+        )
+    else:
+        config_path = args.config
+
     logger.info("SR2 Spectre starting")
 
     config = resolve_config(
-        args.config, cwd=Path.cwd(), env=dict(os.environ)
+        config_path, cwd=Path.cwd(), env=dict(os.environ)
     )
     logger.info(
         "Agent: %s | model: %s",
