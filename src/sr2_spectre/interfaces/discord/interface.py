@@ -176,8 +176,8 @@ class DiscordInterface:
     ) -> None:
         """Route a message through the Agent and stream the response.
 
-        Manages per-channel history, sends the initial "thinking" message,
-        then edits it as text arrives (streaming simulation).
+        Orchestrates the full flow: session setup, agent call with stream
+        rendering, history management, and final message delivery.
 
         Args:
             content: The user's message text.
@@ -199,47 +199,12 @@ class DiscordInterface:
         # Restore channel history into the agent
         self._restore_history(session)
 
-        # Collect response text
-        response_parts: list[str] = []
-        last_edit_time: float | None = None
-        loop = asyncio.get_event_loop()
+        # Drive the agent and render stream events to Discord
+        response_parts, stream_error = await self._drive_agent_stream(
+            content, channel_id, thinking_id
+        )
 
-        try:
-            async for event in self._agent.stream_message(content):
-                if isinstance(event, AgentTextDelta):
-                    response_parts.append(event.text)
-                    self._maybe_edit_stream(
-                        channel_id, thinking_id,
-                        "".join(response_parts),
-                        last_edit_time, loop,
-                    )
-                    last_edit_time = loop.time()
-
-                elif isinstance(event, AgentToolStart) and self.config.tool_embed_enabled:
-                    tool_name = event.name
-                    if self._adapter:
-                        embed = {
-                            "title": f"🔧 {tool_name}",
-                            "description": "Running...",
-                            "color": 16753920,  # Yellow
-                        }
-                        await self._adapter.send_embed(channel_id, embed)
-
-                elif isinstance(event, AgentToolResult) and self.config.tool_embed_enabled:
-                    tool_name = event.name or "tool"
-                    status = "failed" if event.is_error else "completed"
-                    if self._adapter:
-                        from sr2_spectre.interfaces.discord.handler import build_tool_embed
-                        embed = build_tool_embed(tool_name, status, error="Error" if event.is_error else None)
-                        await self._adapter.send_embed(channel_id, embed)
-
-                # AgentDone is handled after the loop
-
-        except Exception as exc:
-            logger.error("Agent stream error: %s", exc)
-            error_msg = f"Error: {exc}"
-            if thinking_id is not None and self._adapter:
-                await self._adapter.edit_message(channel_id, thinking_id, error_msg)
+        if stream_error is not None:
             session.pending_message_id = None
             return
 
@@ -266,6 +231,108 @@ class DiscordInterface:
                     await self._adapter.send_message(channel_id, chunk)
 
         session.pending_message_id = None
+
+    async def _drive_agent_stream(
+        self,
+        content: str,
+        channel_id: int,
+        thinking_id: int | None,
+    ) -> tuple[list[str], Exception | None]:
+        """Drive the agent's message stream and render events to Discord.
+
+        Handles the event loop: collects text deltas, sends stream edits,
+        renders tool start/result embeds. Separates the Discord rendering
+        concern from the orchestration in _process_through_agent.
+
+        Args:
+            content: The user's message text.
+            channel_id: Discord channel ID.
+            thinking_id: ID of the thinking placeholder message.
+
+        Returns:
+            Tuple of (collected response text parts, error or None).
+            If error is not None, the thinking message was already updated
+            with the error and no finalization should occur.
+        """
+        response_parts: list[str] = []
+        last_edit_time: float | None = None
+        loop = asyncio.get_event_loop()
+
+        try:
+            async for event in self._agent.stream_message(content):
+                if isinstance(event, AgentTextDelta):
+                    response_parts.append(event.text)
+                    self._maybe_edit_stream(
+                        channel_id, thinking_id,
+                        "".join(response_parts),
+                        last_edit_time, loop,
+                    )
+                    last_edit_time = loop.time()
+
+                elif isinstance(event, AgentToolStart):
+                    await self._render_tool_start(event, channel_id)
+
+                elif isinstance(event, AgentToolResult):
+                    await self._render_tool_result(event, channel_id)
+
+                # AgentDone is handled after the loop
+
+        except Exception as exc:
+            logger.error("Agent stream error: %s", exc)
+            error_msg = f"Error: {exc}"
+            if thinking_id is not None and self._adapter:
+                await self._adapter.edit_message(channel_id, thinking_id, error_msg)
+            return response_parts, exc
+
+        return response_parts, None
+
+    async def _render_tool_start(
+        self,
+        event: AgentToolStart,
+        channel_id: int,
+    ) -> None:
+        """Render a tool-start event as a Discord embed.
+
+        Only sends an embed when tool_embed_enabled is True in the config.
+
+        Args:
+            event: The AgentToolStart event.
+            channel_id: Discord channel ID.
+        """
+        if not self.config.tool_embed_enabled or self._adapter is None:
+            return
+
+        embed = {
+            "title": f"🔧 {event.name}",
+            "description": "Running...",
+            "color": 16753920,  # Yellow
+        }
+        await self._adapter.send_embed(channel_id, embed)
+
+    async def _render_tool_result(
+        self,
+        event: AgentToolResult,
+        channel_id: int,
+    ) -> None:
+        """Render a tool-result event as a Discord embed.
+
+        Only sends an embed when tool_embed_enabled is True in the config.
+
+        Args:
+            event: The AgentToolResult event.
+            channel_id: Discord channel ID.
+        """
+        if not self.config.tool_embed_enabled or self._adapter is None:
+            return
+
+        from sr2_spectre.interfaces.discord.handler import build_tool_embed
+
+        tool_name = event.name or "tool"
+        status = "failed" if event.is_error else "completed"
+        embed = build_tool_embed(
+            tool_name, status, error="Error" if event.is_error else None
+        )
+        await self._adapter.send_embed(channel_id, embed)
 
     def _maybe_edit_stream(
         self,
