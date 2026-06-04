@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 if TYPE_CHECKING:
     from sr2.pipeline.tracing import Tracer
@@ -54,6 +54,7 @@ class Session:
         llm: LiteLLMCallable,
         registry: ToolRegistry,
         tracer: "Tracer | None" = None,
+        active_frame_provider: Callable[[str], str | None] | None = None,
     ) -> None:
         self.frame_id = frame_id
         self.config = config
@@ -70,6 +71,7 @@ class Session:
             tool_source=self._registry,
             tracer=tracer,
             tool_executor=self._execute_tool,
+            active_frame_provider=active_frame_provider,
         )
 
         # Run context — set by the Interface at start(); None until then.

@@ -75,6 +75,26 @@ class Runtime:
             llm_kwargs.update(model_cfg.params)
         self.llm = LiteLLMCallable(**llm_kwargs)
 
+        # Build PlanResolver instance to wire active_frame_provider into SR2.
+        # The PlanResolver.current_frame_id() returns the active frame for the
+        # lowest-order pending task. We wrap it as a Callable[[str], str | None]
+        # to match the active_frame_provider signature (origin parameter ignored).
+        self._active_frame_provider: Callable[[str], str | None] | None = None
+        self._plan_resolver_config = self._find_plan_resolver_config(config)
+        if self._plan_resolver_config:
+            from sr2_spectre.planning import PlanResolver
+
+            self._plan_resolver = PlanResolver(self._plan_resolver_config)
+
+            def _frame_provider(origin: str) -> str | None:
+                # origin parameter accepted for SR2 signature compatibility;
+                # PlanResolver.current_frame_id() is origin-agnostic.
+                _ = origin
+                return self._plan_resolver.current_frame_id()
+
+            self._active_frame_provider = _frame_provider
+            logger.info("PlanResolver active — wiring active_frame_provider into sessions")
+
     async def initialize(self) -> None:
         """Connect all MCP clients and register their tool bridges into the registry."""
         for client in self._mcp_clients:
@@ -99,6 +119,10 @@ class Runtime:
 
         The Session shares the Runtime's tool registry, LLM callable, and
         pipeline config, but has independent history and serialization.
+
+        When a PlanResolver is configured, the active_frame_provider is wired
+        through so SR2 stamps block.meta["frame"] with the current task's frame
+        id, enabling step-compaction to burn completed step context.
         """
         return Session(
             frame_id=frame_id,
@@ -106,6 +130,7 @@ class Runtime:
             llm=self.llm,
             registry=self.registry,
             tracer=tracer,
+            active_frame_provider=self._active_frame_provider,
         )
 
     async def aclose(self) -> None:
@@ -161,6 +186,23 @@ class Runtime:
             "Auto-injected complete_step tool (plans_root=%s)",
             plans_root or "~/.sr2/plans (default)",
         )
+
+    @staticmethod
+    def _find_plan_resolver_config(
+        config: SpectreConfig,
+    ) -> "ResolverConfig | None":
+        """Scan pipeline layers for a plan resolver and return its ResolverConfig.
+
+        Returns the first ResolverConfig with type=='plan', or None.
+        Used to build the PlanResolver instance for active_frame_provider wiring.
+        """
+        from sr2.config.models import ResolverConfig
+
+        for layer in config.pipeline.layers:
+            for resolver in layer.resolvers:
+                if resolver.type == "plan":
+                    return resolver
+        return None
 
     @staticmethod
     def _find_plans_root(config: SpectreConfig) -> str | None:
