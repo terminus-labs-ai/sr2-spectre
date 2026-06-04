@@ -155,14 +155,25 @@ def parse_frontmatter(
         return None
 
 
+# --- Field coercion helpers ---
+
+def _coerce_str(data: dict, key: str, default: str) -> str:
+    """Get a value from *data*, coerce to string, strip whitespace.
+
+    Handles the repeated pattern of ``data.get(key, default)`` with
+    None-sentinel treatment (None → default) and ``str().strip()``.
+    """
+    value = data.get(key, default)
+    if value is None:
+        value = default
+    return str(value).strip()
+
+
 # --- Kind-specific parse functions ---
 
 def _parse_task(data: dict, label: str) -> TaskFrontmatter:
     """Parse task frontmatter with validation."""
-    plan = data.get("plan", "")
-    if plan is None:
-        plan = ""
-    plan = str(plan).strip()
+    plan = _coerce_str(data, "plan", "")
 
     order = data.get("order", 0)
     try:
@@ -171,10 +182,7 @@ def _parse_task(data: dict, label: str) -> TaskFrontmatter:
         logger.warning("Invalid 'order' in %s — defaulting to 0", label)
         order = 0
 
-    status_raw = data.get("status", "pending")
-    if status_raw is None:
-        status_raw = "pending"
-    status_raw = str(status_raw).strip().lower()
+    status_raw = _coerce_str(data, "status", "pending").lower()
     try:
         status = TaskStatus(status_raw)
     except ValueError:
@@ -183,15 +191,9 @@ def _parse_task(data: dict, label: str) -> TaskFrontmatter:
         )
         status = TaskStatus.PENDING
 
-    verify = data.get("verify", "")
-    if verify is None:
-        verify = ""
-    verify = str(verify)
+    verify = _coerce_str(data, "verify", "")
 
-    title = data.get("title", "")
-    if title is None:
-        title = ""
-    title = str(title)
+    title = _coerce_str(data, "title", "")
 
     return TaskFrontmatter(
         kind="task",
@@ -205,15 +207,9 @@ def _parse_task(data: dict, label: str) -> TaskFrontmatter:
 
 def _parse_plan(data: dict, label: str) -> PlanFrontmatter:
     """Parse plan frontmatter with validation."""
-    slug = data.get("slug", "")
-    if slug is None:
-        slug = ""
-    slug = str(slug).strip()
+    slug = _coerce_str(data, "slug", "")
 
-    status_raw = data.get("status", "open")
-    if status_raw is None:
-        status_raw = "open"
-    status_raw = str(status_raw).strip().lower()
+    status_raw = _coerce_str(data, "status", "open").lower()
     try:
         status = PlanStatus(status_raw)
     except ValueError:
@@ -222,10 +218,7 @@ def _parse_plan(data: dict, label: str) -> PlanFrontmatter:
         )
         status = PlanStatus.OPEN
 
-    goal = data.get("goal", "")
-    if goal is None:
-        goal = ""
-    goal = str(goal)
+    goal = _coerce_str(data, "goal", "")
 
     return PlanFrontmatter(
         kind="plan",
@@ -237,10 +230,7 @@ def _parse_plan(data: dict, label: str) -> PlanFrontmatter:
 
 def _parse_knowledge(data: dict, label: str) -> KnowledgeFrontmatter:
     """Parse project-knowledge frontmatter."""
-    project = data.get("project", "")
-    if project is None:
-        project = ""
-    project = str(project).strip()
+    project = _coerce_str(data, "project", "")
 
     return KnowledgeFrontmatter(
         kind="project-knowledge",

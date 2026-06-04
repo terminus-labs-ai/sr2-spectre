@@ -21,6 +21,7 @@ from textwrap import dedent
 from sr2_spectre.planning.frontmatter import (
     _FRONTMATTER_PARSERS,
     _build_frontmatter,
+    _coerce_str,
     _parse_knowledge,
     _parse_plan,
     _parse_task,
@@ -591,7 +592,42 @@ class TestPyYAMLReuse:
 
 
 # =========================================================================
-# 10. OCP dispatch — _FRONTMATTER_PARSERS & _build_frontmatter
+# 10. _coerce_str helper — DRY field coercion (spc-19)
+# =========================================================================
+
+
+class TestCoerceStr:
+    """Tests for the _coerce_str helper that replaces the repeated
+    ``data.get(k, d); if x is None: x = d; x = str(x).strip()`` pattern."""
+
+    def test_present_value_stripped(self):
+        """Present non-None value is converted to string and stripped."""
+        assert _coerce_str({"key": "  hello  "}, "key", "") == "hello"
+
+    def test_missing_key_returns_default(self):
+        """Missing key returns the default."""
+        assert _coerce_str({}, "missing", "default") == "default"
+
+    def test_none_value_returns_default(self):
+        """Explicitly None value is treated as missing — returns default."""
+        assert _coerce_str({"key": None}, "key", "fallback") == "fallback"
+
+    def test_non_string_value_coerced(self):
+        """Non-string values (int, float) are coerced to string."""
+        assert _coerce_str({"key": 42}, "key", "") == "42"
+        assert _coerce_str({"key": 3.14}, "key", "") == "3.14"
+
+    def test_empty_string_stays_empty(self):
+        """Empty string value is preserved (not treated as None)."""
+        assert _coerce_str({"key": ""}, "key", "default") == ""
+
+    def test_default_is_stripped(self):
+        """Default value is also stripped."""
+        assert _coerce_str({}, "missing", "  default  ") == "default"
+
+
+# =========================================================================
+# 11. OCP dispatch — _FRONTMATTER_PARSERS & _build_frontmatter
 # =========================================================================
 
 
