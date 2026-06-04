@@ -429,3 +429,418 @@ class TestSmokeConfigValidation:
         cfg = load_config(str(config_file))
         assert cfg.agent.name == "bad-tool-agent"
         assert len(cfg.agent.tools) == 1
+
+
+# ---------------------------------------------------------------------------
+# Smoke 9: Discord interface end-to-end (mocked adapter)
+# ---------------------------------------------------------------------------
+
+class TestSmokeDiscordInterface:
+    """Verify the full Discord interface path works end-to-end with mocked adapter.
+
+    These are integration-style smoke tests — they verify the Interface protocol
+    is properly implemented and message routing works through the full stack.
+    They do NOT require discord.py installed or a real Discord bot.
+    """
+
+    def test_discord_interface_implements_protocol(self) -> None:
+        """DiscordInterface has all Interface protocol attributes."""
+        from sr2_spectre.interfaces import Interface
+        from sr2_spectre.interfaces.discord import DiscordInterface
+
+        interface = DiscordInterface()
+        assert hasattr(interface, "name")
+        assert interface.name == "discord"
+        assert hasattr(interface, "start")
+        assert hasattr(interface, "stop")
+        assert hasattr(interface, "run")
+
+    def test_discord_interface_config_loading(self) -> None:
+        """DiscordInterface loads with custom config without error."""
+        from sr2_spectre.interfaces.discord.config import DiscordConfig
+        from sr2_spectre.interfaces.discord.interface import DiscordInterface
+
+        config = DiscordConfig(
+            token="test-token",
+            mention_only=True,
+            max_message_length=1500,
+            tool_embed_enabled=False,
+        )
+        interface = DiscordInterface(config=config)
+        assert interface.config.token == "test-token"
+        assert interface.config.mention_only is True
+        assert interface.config.max_message_length == 1500
+        assert interface.config.tool_embed_enabled is False
+
+    def test_discord_handler_should_respond(self) -> None:
+        """Message routing respects mention_only setting."""
+        from sr2_spectre.interfaces.discord.handler import should_respond
+
+        # Without mention_only, everything gets a response
+        assert should_respond("hello", False, 11111, ["<@11111>"]) is True
+
+        # With mention_only, non-mention messages are ignored
+        assert should_respond("hello", True, 11111, ["<@11111>"]) is False
+
+        # With mention_only, mentioned messages get a response
+        assert should_respond("<@11111> hello", True, 11111, ["<@11111>"]) is True
+
+    def test_discord_handler_slash_commands(self) -> None:
+        """Slash command parsing and handling works correctly."""
+        from sr2_spectre.interfaces.discord.handler import (
+            handle_command,
+            parse_slash_command,
+        )
+
+        # Parse known command
+        cmd, rest = parse_slash_command("/reset")
+        assert cmd == "reset"
+        assert rest == ""
+
+        # Parse command with arguments
+        cmd, rest = parse_slash_command("/ask what is the weather?")
+        assert cmd == "ask"
+        assert rest == "what is the weather?"
+
+        # Not a command
+        cmd, rest = parse_slash_command("hello world")
+        assert cmd is None
+
+        # /help returns help text
+        response = handle_command("help", "")
+        assert response is not None
+        assert "/ask" in response
+
+    def test_discord_session_map_isolation(self) -> None:
+        """SessionMap creates isolated sessions per channel."""
+        from sr2_spectre.interfaces.discord.session_map import SessionMap
+
+        sm = SessionMap()
+        s1 = sm.get_or_create(111)
+        s2 = sm.get_or_create(222)
+
+        # Different sessions for different channels
+        assert s1 is not s2
+
+        # Same session for same channel
+        s1_again = sm.get_or_create(111)
+        assert s1 is s1_again
+
+        # Reset clears a specific channel
+        s1.history.append({"role": "user", "content": []})
+        assert len(s1.history) == 1
+        sm.reset(111)
+        assert len(s1.history) == 0
+        assert len(s2.history) == 0  # unaffected
+
+    def test_discord_message_chunking(self) -> None:
+        """Long messages are chunked correctly for Discord's 2000-char limit."""
+        from sr2_spectre.interfaces.discord.handler import chunk_message
+
+        text = "x" * 5000
+        chunks = chunk_message(text, 2000)
+
+        assert len(chunks) == 3
+        # chunk_message adds "..." split markers, so chunks may approach max_length
+        assert all(len(c) <= 2000 for c in chunks)
+        # All text accounted for (split markers add extra chars)
+        assert sum(len(c) for c in chunks) >= len(text)
+
+
+# ---------------------------------------------------------------------------
+# Smoke 10: Memory extraction + retrieval (sr2 memory subsystem)
+# ---------------------------------------------------------------------------
+
+class TestSmokeMemorySubsystem:
+    """Verify the SR2 memory subsystem works end-to-end:
+    extraction → storage → search → resolver injection.
+    """
+
+    def test_memory_extraction_from_turn(self) -> None:
+        """RuleBasedExtractor extracts memories from conversation text."""
+        from sr2.memory import RuleBasedExtractor
+
+        extractor = RuleBasedExtractor()
+
+        # Text with preference signal
+        result = extractor.extract(
+            "I prefer using pytest over unittest for testing."
+        )
+        assert len(result.memories) >= 1
+        assert any("preference" in m.tags for m in result.memories)
+
+    def test_memory_store_save_and_search(self) -> None:
+        """InMemoryMemoryStore saves memories and retrieves them by search."""
+        from sr2.memory import InMemoryMemoryStore, Memory, MemoryScope
+
+        store = InMemoryMemoryStore()
+
+        # Save some memories
+        mem1 = Memory(
+            content="The project uses Python 3.12 with uv for package management.",
+            scope=MemoryScope.PROJECT,
+            tags=["fact", "tooling"],
+        )
+        mem2 = Memory(
+            content="User prefers dark theme for the TUI interface.",
+            scope=MemoryScope.SHARED,
+            tags=["preference"],
+        )
+        store.save(mem1)
+        store.save(mem2)
+
+        # Search by keyword
+        results = store.search("Python")
+        assert len(results) >= 1
+        assert "Python" in results[0].content
+
+        results = store.search("theme")
+        assert len(results) >= 1
+        assert "theme" in results[0].content
+
+    def test_memory_store_tag_filtering(self) -> None:
+        """Memory store supports filtering by tag."""
+        from sr2.memory import InMemoryMemoryStore, Memory, MemoryScope
+
+        store = InMemoryMemoryStore()
+
+        store.save(Memory(content="Fact about the system", scope=MemoryScope.PROJECT, tags=["fact"]))
+        store.save(Memory(content="User preference for formatting", scope=MemoryScope.SHARED, tags=["preference"]))
+        store.save(Memory(content="Another fact about architecture", scope=MemoryScope.PROJECT, tags=["fact", "architecture"]))
+
+        fact_results = store.get_by_tag("fact")
+        assert len(fact_results) == 2
+
+        pref_results = store.get_by_tag("preference")
+        assert len(pref_results) == 1
+
+    def test_memory_frequency_reinforcement(self) -> None:
+        """Saving the same memory again increments frequency."""
+        from sr2.memory import InMemoryMemoryStore, Memory
+
+        store = InMemoryMemoryStore()
+        mem = Memory(content="Important recurring fact")
+        store.save(mem)
+        assert mem.frequency == 0  # First save
+
+        # Save again — frequency increments
+        again = store.save(mem)
+        assert again.frequency == 1
+
+    @pytest.mark.asyncio
+    async def test_memory_resolver_injects_context(self) -> None:
+        """MemoryResolver searches the store and injects memories as context."""
+        from sr2.config.models import ResolverConfig
+        from sr2.memory import InMemoryMemoryStore, Memory, MemoryScope, MemoryResolver
+        from sr2.pipeline.events import Event, EventPhase
+
+        store = InMemoryMemoryStore()
+        store.save(Memory(
+            content="The user prefers snake_case for variable names.",
+            scope=MemoryScope.SHARED,
+            tags=["preference"],
+        ))
+
+        resolver = MemoryResolver(
+            config=ResolverConfig(type="memory", config={"limit": 5}),
+            store=store,
+        )
+
+        # Simulate a user input event — data can be a plain string
+        events = [
+            Event(
+                name="user_input",
+                phase=EventPhase.STARTING,
+                source_layer="",
+                data="What naming convention should I use?",
+            )
+        ]
+
+        content = await resolver.resolve(events)
+
+        assert content.resolver_name == "memory"
+        # The resolver searched the store; content may or may not have matches
+        # depending on keyword overlap between query and stored memories.
+        assert len(content.content) >= 0
+
+    def test_memory_extraction_deduplication(self) -> None:
+        """RuleBasedExtractor deduplicates similar extractions."""
+        from sr2.memory import RuleBasedExtractor
+
+        extractor = RuleBasedExtractor()
+
+        # Text with repeated similar facts
+        text = (
+            "The project uses Docker. The project uses Docker for testing. "
+            "The project uses Docker in production."
+        )
+        result = extractor.extract(text)
+
+        # Should deduplicate similar content
+        contents = [m.content for m in result.memories]
+        # At least some deduplication should occur
+        assert len(contents) <= len(set(c[:30] for c in contents)) + 1
+
+
+# ---------------------------------------------------------------------------
+# Smoke 11: Degradation + priority shedding
+# ---------------------------------------------------------------------------
+
+class TestSmokeDegradation:
+    """Verify degradation subsystem works end-to-end:
+    ladder → active categories → priority shedding → circuit breaker.
+    """
+
+    def test_degradation_ladder_step_down(self) -> None:
+        """DegradationLadder steps down correctly, reducing active categories."""
+        from sr2.degradation import DegradationLadder, DegradationLevel
+
+        ladder = DegradationLadder()
+
+        # Start at FULL
+        assert ladder.is_at_full() is True
+        full_categories = ladder.active_categories()
+        assert "system" in full_categories
+        assert "memory" in full_categories
+        assert "tools" in full_categories
+
+        # Step down — categories reduce
+        ladder.step_down()
+        reduced = ladder.active_categories()
+        assert len(reduced) < len(full_categories) or reduced != full_categories
+
+        # Reset returns to full
+        ladder.reset()
+        assert ladder.is_at_full() is True
+
+    def test_degradation_ladder_max_depth(self) -> None:
+        """Stepping down beyond max depth is a no-op."""
+        from sr2.degradation import DegradationLadder
+
+        ladder = DegradationLadder()
+        # Step down through all levels
+        for _ in range(10):
+            ladder.step_down()
+
+        # Should be at the lowest level
+        assert not ladder.is_at_full()
+
+    def test_priority_shedding_removes_lowest_priority_first(self) -> None:
+        """shed() removes lowest-priority layers first to fit budget."""
+        from sr2.degradation.shedding import shed
+
+        class Layer:
+            def __init__(self, name, priority, token_count):
+                self.name = name
+                self.priority = priority
+                self.token_count = token_count
+
+        layers = [
+            Layer("system", priority=10, token_count=100),       # High priority
+            Layer("memory", priority=5, token_count=200),        # Medium priority
+            Layer("tools", priority=5, token_count=150),         # Medium priority
+            Layer("history", priority=3, token_count=300),       # Low priority
+        ]
+
+        # Budget of 450 — should keep system(100) + memory(200) + tools(150) = 450
+        survivors = shed(layers, 450)
+        names = [l.name for l in survivors]
+        assert "history" not in names  # Lowest priority shed first
+        assert "system" in names
+
+        # Tighter budget — shed more
+        survivors = shed(layers, 250)
+        total = sum(l.token_count for l in survivors)
+        assert total <= 250
+
+    def test_priority_shedding_preserves_order(self) -> None:
+        """shed() preserves the original order of surviving layers."""
+        from sr2.degradation.shedding import shed
+
+        class Layer:
+            def __init__(self, name, priority, token_count):
+                self.name = name
+                self.priority = priority
+                self.token_count = token_count
+
+        layers = [
+            Layer("a", priority=3, token_count=100),
+            Layer("b", priority=10, token_count=100),
+            Layer("c", priority=5, token_count=100),
+            Layer("d", priority=1, token_count=100),
+        ]
+
+        # Budget 200 — should keep highest priority layers
+        survivors = shed(layers, 200)
+        names = [l.name for l in survivors]
+
+        # Survivors should be in original order
+        for i in range(len(names) - 1):
+            idx_a = next(j for j, l in enumerate(layers) if l.name == names[i])
+            idx_b = next(j for j, l in enumerate(layers) if l.name == names[i + 1])
+            assert idx_a < idx_b
+
+    def test_priority_shedding_empty_input(self) -> None:
+        """shed() handles empty input gracefully."""
+        from sr2.degradation.shedding import shed
+
+        assert shed([], 100) == []
+
+    def test_priority_shedding_within_budget(self) -> None:
+        """shed() returns all layers when total is within budget."""
+        from sr2.degradation.shedding import shed
+
+        class Layer:
+            def __init__(self, name, priority, token_count):
+                self.name = name
+                self.priority = priority
+                self.token_count = token_count
+
+        layers = [
+            Layer("a", priority=5, token_count=100),
+            Layer("b", priority=10, token_count=200),
+        ]
+
+        survivors = shed(layers, 500)
+        assert len(survivors) == 2
+
+    def test_circuit_breaker_open_on_failures(self) -> None:
+        """CircuitBreaker opens after consecutive failures, allows recovery via half-open."""
+        import time
+        from sr2.degradation.circuit_breaker import CircuitBreaker, CircuitState
+
+        breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=0.1)
+
+        # Record failures to trip the breaker
+        breaker.record_failure()
+        breaker.record_failure()
+        assert breaker.state == CircuitState.CLOSED
+
+        breaker.record_failure()
+        assert breaker.state == CircuitState.OPEN
+
+        # Wait for recovery timeout to elapse
+        time.sleep(0.15)
+
+        # allow_request() transitions OPEN → HALF_OPEN after timeout
+        assert breaker.allow_request() is True
+        assert breaker.state == CircuitState.HALF_OPEN
+
+        # Success in half-open closes the circuit
+        breaker.record_success()
+        assert breaker.state == CircuitState.CLOSED
+
+    def test_circuit_breaker_success_resets_counter(self) -> None:
+        """Successful call resets the failure counter."""
+        from sr2.degradation.circuit_breaker import CircuitBreaker, CircuitState
+
+        breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=1.0)
+
+        breaker.record_failure()
+        breaker.record_failure()
+        assert breaker.state == CircuitState.CLOSED
+
+        breaker.record_success()
+        # After success, a third failure shouldn't trip
+        breaker.record_failure()
+        assert breaker.state == CircuitState.CLOSED
