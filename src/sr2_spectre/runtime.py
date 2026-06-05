@@ -95,6 +95,11 @@ class Runtime:
             self._active_frame_provider = _frame_provider
             logger.info("PlanResolver active — wiring active_frame_provider into sessions")
 
+            # Warn if step_compaction transformer is not declared in any layer.
+            # A PlanResolver stamps frame metadata on blocks, but without the
+            # transformer those frames are never burned — context grows unbounded.
+            self._check_step_compaction_config(config)
+
     async def initialize(self) -> None:
         """Connect all MCP clients and register their tool bridges into the registry."""
         for client in self._mcp_clients:
@@ -218,6 +223,36 @@ class Runtime:
                 if resolver.type == "plan":
                     return resolver.config.get("plans_root")
         return None
+
+    @staticmethod
+    def _find_step_compaction_transformer(config: SpectreConfig) -> bool:
+        """Return True if any pipeline layer declares a step_compaction transformer.
+
+        Walks pipeline.layers[*].transformers[*] looking for type=='step_compaction'.
+        """
+        for layer in config.pipeline.layers:
+            if layer.transformers:
+                for transformer in layer.transformers:
+                    if transformer.type == "step_compaction":
+                        return True
+        return False
+
+    def _check_step_compaction_config(self, config: SpectreConfig) -> None:
+        """Warn at startup if a plan resolver exists but no step_compaction transformer is declared.
+
+        A PlanResolver stamps block.meta['frame'] on every block, enabling
+        step-compaction to burn completed frame context. Without the
+        transformer, stamped frames accumulate unbounded — the spc-3 failure
+        mode. This warning catches the half-configured state early.
+        """
+        if self._find_step_compaction_transformer(config):
+            return
+        logger.warning(
+            "PlanResolver is configured but no step_compaction transformer was found "
+            "in any pipeline layer. Block frames will accumulate unbounded. "
+            "Add a step_compaction transformer to a pipeline layer (see "
+            "sr2_spectre.planning.transformer:StepCompactionTransformer)."
+        )
 
     def _bootstrap_skills(self, config: SpectreConfig) -> None:
         """Bootstrap the SkillRegistry with DEFAULT_SKILLS + config-declared skills.
