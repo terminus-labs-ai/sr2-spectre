@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Callable
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
@@ -53,11 +53,21 @@ def _make_mock_agent(
 
     events = list(stream_events) if stream_events else []
 
+    # Build a real async iterator factory so `async for` works,
+    # wrapped in a MagicMock so we can assert calls.
+    call_log: list[str] = []
+
     async def _stream(_text: str) -> AsyncIterator[AgentEvent]:
         for ev in events:
             yield ev
 
-    agent.stream_message = _stream
+    def _stream_factory(text: str):
+        call_log.append(text)
+        return _stream(text)
+
+    agent.stream_message = MagicMock(side_effect=_stream_factory)
+    # Attach call_log so tests can inspect what was dispatched
+    agent._stream_call_log = call_log
     return agent
 
 
@@ -102,11 +112,11 @@ def make_mock_agent() -> Callable[..., MagicMock]:
 # ---------------------------------------------------------------------------
 
 async def submit_input(pilot, app: SpectreTUI, text: str) -> None:
-    """Type text into the prompt input and submit via Enter."""
+    """Type text into the prompt input and submit."""
     from textual.widgets import Input
     inp = app.query_one("#prompt", Input)
     inp.value = text
-    await pilot.press("Enter")
+    await inp.run_action("submit")
     await pilot.pause()
 
 
