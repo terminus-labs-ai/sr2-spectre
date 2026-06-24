@@ -48,6 +48,14 @@ Commands:
   /history  — show conversation history
   /save [path]  — save session to JSON (default: ~/.sr2-spectre/session.json)
   /load [path]  — load session from JSON
+
+Key bindings:
+  Ctrl+Q        — quit
+  Ctrl+Alt+C    — copy full output to clipboard
+
+Text selection:
+  Hold Shift while dragging to select text in the output pane,
+  then use your terminal's native copy (Ctrl+Shift+C or right-click).
 """
 
 
@@ -229,6 +237,7 @@ class SpectreTUI(App):
 
     BINDINGS = [
         ("ctrl+q", "quit", "Quit"),
+        ("ctrl+alt+c", "copy_output", "Copy"),
     ]
 
     def __init__(self, agent: "Agent") -> None:
@@ -254,6 +263,47 @@ class SpectreTUI(App):
     def on_mount(self) -> None:
         """Focus the input on launch."""
         self.query_one("#prompt", Input).focus()
+
+    def action_copy_output(self) -> None:
+        """Copy the full output log to the system clipboard."""
+        log = self.query_one("#output", RichLog)
+        # Extract plain text from RichLog's internal Strip lines
+        text_lines = []
+        for strip in log.lines:
+            line_text = strip.text
+            if line_text.strip():
+                text_lines.append(line_text)
+        text = "\n".join(text_lines)
+        self._copy_to_clipboard(text)
+        self.notify("Output copied to clipboard", severity="information")
+
+    @staticmethod
+    def _copy_to_clipboard(text: str) -> None:
+        """Copy text to the system clipboard.
+
+        Tries pyperclip first, falls back to subprocess calls for
+        common clipboard tools (xclip, xsel, pbcopy).
+        """
+        try:
+            import pyperclip
+            pyperclip.copy(text)
+            return
+        except ImportError:
+            pass
+
+        # Fallback: try common clipboard utilities
+        import subprocess
+        for cmd in (
+            ["pbcopy"],          # macOS
+            ["xclip", "-selection", "clipboard"],  # Linux (X11)
+            ["xsel", "-b"],      # Linux (X11)
+        ):
+            try:
+                proc = subprocess.run(cmd, input=text, text=True, capture_output=True)
+                if proc.returncode == 0:
+                    return
+            except FileNotFoundError:
+                continue
 
     def update_status(self, session_id: str, msg_count: int, tool_count: int) -> None:
         """Update the status bar text."""
